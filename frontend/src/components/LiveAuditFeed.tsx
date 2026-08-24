@@ -72,8 +72,8 @@ export const LiveAuditFeed: React.FC = () => {
       </div>
 
       {/* Terminal window — ink header bar */}
-      <div className="border border-black/90 shadow-[inset_0_0_0_1px_rgba(245,245,245,0.4)]">
-        <div className="flex items-center gap-1.5 px-3 py-1.5 bg-black border-b border-black/90">
+      <div className="border border-black/90">
+        <div className="flex items-center gap-1.5 px-3 py-1.5 bg-hermes-ink border-b border-black/90">
           <span className="w-2.5 h-2.5 rounded-full bg-rose-600" />
           <span className="w-2.5 h-2.5 rounded-full bg-amber-400" />
           <span className="w-2.5 h-2.5 rounded-full bg-emerald-500" />
@@ -81,10 +81,10 @@ export const LiveAuditFeed: React.FC = () => {
         </div>
 
         <div className="bg-white p-3 font-mono text-xs max-h-72 overflow-y-auto space-y-1">
-          {logs.map(log => (
+          {logs.map((log, index) => (
             <div
               key={log.id}
-              className={`feed-enter flex items-start gap-3 p-1.5 pl-2.5 border-l-2 border-b border-b-black/5 last:border-b-0 hover:bg-hermes-paper transition-colors ${TYPE_STYLES[log.type].border}`}
+              className={`flex items-start gap-3 p-1.5 pl-2.5 border-l-2 border-b border-b-black/5 last:border-b-0 hover:bg-hermes-paper transition-colors ${TYPE_STYLES[log.type].border} ${index === 0 ? 'feed-enter' : ''}`}
             >
               <span className={`mt-1.5 w-1.5 h-1.5 shrink-0 ${TYPE_STYLES[log.type].dot}`} />
               <span className="text-black/40 whitespace-nowrap text-[11px] tabular-nums">{log.timestamp}</span>

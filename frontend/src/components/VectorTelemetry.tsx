@@ -32,7 +32,7 @@ export const VectorTelemetry: React.FC = () => {
       </div>
 
       {/* Vector Similarity Search Interactive Test Preview */}
-      <div className="border border-black/90 bg-hermes-paper p-5 flex flex-col gap-4 shadow-[inset_2px_2px_0_0_rgba(10,10,20,0.06)]">
+      <div className="border border-black/90 bg-hermes-paper p-5 flex flex-col gap-4">
         <h3 className="text-xs font-bold text-black font-mono uppercase tracking-widest flex items-center gap-2">
           <Cpu className="w-4 h-4" /> Nearest-Neighbor Query Simulation
         </h3>

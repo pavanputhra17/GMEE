@@ -1,11 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { apiClient } from '../api/client';
+import { fetchDashboard } from '../api/dashboard';
 import { Header, TabType } from '../components/Header';
 import { MetricCard } from '../components/MetricCard';
 import { GraphVisualizer } from '../components/GraphVisualizer';
 import { VectorTelemetry } from '../components/VectorTelemetry';
 import { LiveAuditFeed } from '../components/LiveAuditFeed';
+import { CacheTelemetry } from '../components/CacheTelemetry';
 import {
   Database,
   Network,
@@ -33,7 +35,6 @@ const fetchHealth = async (): Promise<HealthStatus> => {
     throw new Error(String(error));
   }
 };
-
 /* ------------------------------ Demo telemetry ----------------------------- */
 
 interface DemoTelemetry {
@@ -125,6 +126,15 @@ export const SystemHealth: React.FC = () => {
     refetchInterval: everConnected && refetchInterval > 0 ? refetchInterval : false,
   });
 
+  // Live corpus/graph/cache metrics — only polled once a backend is known good.
+  const { data: dash } = useQuery({
+    queryKey: ['dashboard'],
+    queryFn: fetchDashboard,
+    enabled: everConnected,
+    retry: false,
+    refetchInterval: everConnected && refetchInterval > 0 ? refetchInterval : false,
+  });
+
   // Latch connectivity the first time the backend answers.
   useEffect(() => {
     if (data) setEverConnected(true);
@@ -167,6 +177,10 @@ export const SystemHealth: React.FC = () => {
     : 'degraded';
 
   const headerStatus = demoMode ? ('ok' as const) : realStatus;
+
+  // Honest rollup: share of infra services currently reporting OK.
+  const servicesUp = [isPostgresOk, isNeo4jOk, isRedisOk].filter(Boolean).length;
+  const healthScore = Math.round((servicesUp / 3) * 100);
 
   return (
     <div className="min-h-screen flex flex-col items-center p-4 md:p-8 lg:p-12 relative">
@@ -217,7 +231,7 @@ export const SystemHealth: React.FC = () => {
           <LoadingGrid />
         ) : error && !demoMode ? (
           /* Error State View */
-          <div className="card-brutal p-10 flex flex-col items-center text-center border-rose-700">
+          <div className="card-brutal p-10 flex flex-col items-center text-center">
             <div className="w-16 h-16 flex items-center justify-center mb-4 border border-black/90 bg-rose-100 shadow-[3px_3px_0_0_rgba(10,10,20,1)]">
               <AlertCircle className="w-8 h-8 text-rose-700" />
             </div>
@@ -257,8 +271,12 @@ export const SystemHealth: React.FC = () => {
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5">
                   <MetricCard
                     title="PostgreSQL Vector"
-                    value={isPostgresOk ? "Nominal" : "Degraded"}
-                    subtitle="Relational DB & pgvector"
+                    value={isPostgresOk ? (dash ? `${(dash.claims_total ?? 0).toLocaleString()} claims` : "Nominal") : "Degraded"}
+                    subtitle={
+                      dash
+                        ? `${(dash.embedded_claims ?? 0).toLocaleString()} embedded · ${(dash.entities_total ?? 0).toLocaleString()} entities`
+                        : "Relational DB & pgvector"
+                    }
                     icon={Database}
                     accentColor={isPostgresOk ? "violet" : "rose"}
                     trend={isPostgresOk ? "PORT 55432" : "DOWN"}
@@ -267,7 +285,11 @@ export const SystemHealth: React.FC = () => {
                   <MetricCard
                     title="Neo4j Graph Engine"
                     value={isNeo4jOk ? "Connected" : "Degraded"}
-                    subtitle={`${telemetry.graphNodes.toLocaleString()} nodes · ${telemetry.graphEdges.toLocaleString()} edges`}
+                    subtitle={
+                      dash?.graph
+                        ? `${Object.values(dash.graph.nodes).reduce((a, b) => a + b, 0).toLocaleString()} nodes · ${dash.graph.relationships.toLocaleString()} edges`
+                        : `${telemetry.graphNodes.toLocaleString()} nodes · ${telemetry.graphEdges.toLocaleString()} edges`
+                    }
                     icon={Network}
                     accentColor={isNeo4jOk ? "cyan" : "rose"}
                     trend={isNeo4jOk ? "BOLT 7687" : "DOWN"}
@@ -275,8 +297,12 @@ export const SystemHealth: React.FC = () => {
                   />
                   <MetricCard
                     title="Redis Cache & Queue"
-                    value={isRedisOk ? "Active" : "Degraded"}
-                    subtitle={`Queue depth ${telemetry.queueDepth.toLocaleString()} jobs`}
+                    value={isRedisOk ? (dash?.cache ? dash.cache.used_memory_human : "Active") : "Degraded"}
+                    subtitle={
+                      dash?.cache
+                        ? `In-memory store · ${dash.cache.used_memory_mb} MB allocated`
+                        : `Queue depth ${telemetry.queueDepth.toLocaleString()} jobs`
+                    }
                     icon={HardDrive}
                     accentColor={isRedisOk ? "amber" : "rose"}
                     trend={isRedisOk ? "PORT 6379" : "DOWN"}
@@ -284,8 +310,8 @@ export const SystemHealth: React.FC = () => {
                   />
                   <MetricCard
                     title="System Health Score"
-                    value={isAllOk ? `${Math.round(telemetry.hitRatio)}%` : "66%"}
-                    subtitle="Overall GMEE cluster vital"
+                    value={`${healthScore}%`}
+                    subtitle="Infra services reporting nominal"
                     icon={ShieldCheck}
                     accentColor={isAllOk ? "emerald" : "amber"}
                     trend={isAllOk ? "HEALTHY" : "CHECK"}
@@ -319,46 +345,12 @@ export const SystemHealth: React.FC = () => {
             )}
 
             {activeTab === 'cache' && (
-              <div className="space-y-6">
-                <div className="card-brutal p-6">
-                  <h2 className="text-2xl font-display mb-1 flex items-center gap-2">
-                    <HardDrive className="w-5 h-5" /> Redis Cache & Token Blocklist Telemetry
-                  </h2>
-                  <p className="text-xs text-black/60 font-mono mb-6">
-                    In-memory data store performance, active token blocklist JTIs, and rate-limiting queue state
-                  </p>
-
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    <div className="border border-black/20 bg-white p-4">
-                      <div className="text-xs font-mono uppercase tracking-widest text-black/50">Cache Hit Ratio</div>
-                      <div className="text-2xl font-display text-amber-600 mt-1 tabular-nums">
-                        {demoMode ? `${telemetry.hitRatio.toFixed(1)}%` : '98.4%'}
-                      </div>
-                      <div className="text-[11px] font-mono text-black/50 mt-1">
-                        {demoMode ? `${telemetry.latencyMs.toFixed(1)}ms avg response` : '0.2ms avg response'}
-                      </div>
-                    </div>
-
-                    <div className="border border-black/20 bg-white p-4">
-                      <div className="text-xs font-mono uppercase tracking-widest text-black/50">Revoked JWT JTIs</div>
-                      <div className="text-2xl font-display mt-1 tabular-nums">
-                        {telemetry.revokedTokens.toLocaleString()} tokens
-                      </div>
-                      <div className="text-[11px] font-mono text-black/50 mt-1">Blocklist active</div>
-                    </div>
-
-                    <div className="border border-black/20 bg-white p-4">
-                      <div className="text-xs font-mono uppercase tracking-widest text-black/50">Memory Allocation</div>
-                      <div className="text-2xl font-display text-emerald-700 mt-1 tabular-nums">
-                        {demoMode ? `${telemetry.memoryMb.toFixed(1)} MB` : '128.4 MB'}
-                      </div>
-                      <div className="text-[11px] font-mono text-black/50 mt-1">redis:7-alpine container</div>
-                    </div>
-                  </div>
-                </div>
-
-                <LiveAuditFeed />
-              </div>
+              <CacheTelemetry
+                hitRatio={demoMode ? `${telemetry.hitRatio.toFixed(1)}%` : '98.4%'}
+                latencyMs={demoMode ? `${telemetry.latencyMs.toFixed(1)}ms` : '0.2ms'}
+                revokedTokens={`${telemetry.revokedTokens.toLocaleString()} tokens`}
+                memoryMb={demoMode ? `${telemetry.memoryMb.toFixed(1)} MB` : '128.4 MB'}
+              />
             )}
           </div>
         )}

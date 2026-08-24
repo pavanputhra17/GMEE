@@ -60,13 +60,16 @@ export const Header: React.FC<HeaderProps> = ({
             {[0, 1].map(dup => (
               <div key={dup} className="flex shrink-0 items-center" aria-hidden={dup === 1}>
                 {TICKER_ITEMS.concat(TICKER_ITEMS).map((item, i) => (
-                  <span key={`${dup}-${i}`} className="px-6 text-[10px] font-mono font-bold uppercase tracking-[0.2em] whitespace-nowrap">
+                  <span
+                    key={`${dup}-${i}`}
+                    className="px-6 text-[10px] font-mono font-bold uppercase tracking-[0.2em] whitespace-nowrap"
+                  >
                     {item} <span className="ml-6 opacity-60">◆</span>
                   </span>
                 ))}
               </div>
-  ))}
-            </div>
+            ))}
+          </div>
         </div>
 
         <div className="px-4 md:px-8 lg:px-12 pt-5 flex flex-col gap-4">
@@ -134,7 +137,7 @@ export const Header: React.FC<HeaderProps> = ({
 
           {/* Navigation Tabs — flat segmented control */}
           <nav className="flex items-center gap-0 overflow-x-auto">
-            <TabButton id="overview" label="Overview Vitals" icon={Layers} activeTab={activeTab} setActiveTab={setActiveTab} first />
+            <TabButton id="overview" label="Overview Vitals" icon={Layers} activeTab={activeTab} setActiveTab={setActiveTab} />
             <TabButton id="graph" label="Neo4j Graph Engine" icon={Network} badge="7687" activeTab={activeTab} setActiveTab={setActiveTab} />
             <TabButton id="vector" label="Postgres Vector" icon={Database} badge="pgvector" activeTab={activeTab} setActiveTab={setActiveTab} />
             <TabButton id="cache" label="Redis Queue" icon={HardDrive} badge="6379" activeTab={activeTab} setActiveTab={setActiveTab} />
@@ -152,8 +155,7 @@ const TabButton: React.FC<{
   badge?: string;
   activeTab: TabType;
   setActiveTab: (tab: TabType) => void;
-  first?: boolean;
-}> = ({ id, label, icon: Icon, badge, activeTab, setActiveTab, first = false }) => {
+}> = ({ id, label, icon: Icon, badge, activeTab, setActiveTab }) => {
   const isActive = activeTab === id;
 
   return (
@@ -162,7 +164,7 @@ const TabButton: React.FC<{
       className={`flex items-center gap-2.5 px-4 py-2.5 text-xs md:text-sm font-mono font-bold uppercase tracking-wide transition-colors whitespace-nowrap cursor-pointer border-b-2 -mb-px ${
         isActive
           ? 'border-hermes-red text-hermes-ink bg-white'
-          : `border-transparent text-black/50 hover:text-black ${first ? '' : ''}`
+          : 'border-transparent text-black/50 hover:text-black'
       }`}
     >
       <Icon className="w-4 h-4" />

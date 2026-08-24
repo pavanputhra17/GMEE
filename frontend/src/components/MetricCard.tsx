@@ -11,26 +11,31 @@ interface MetricCardProps {
   trendPositive?: boolean;
 }
 
+/**
+ * Color discipline: cards are ink-on-paper by default.
+ * The brand-red icon tile is reserved for the primary service card ('cyan'
+ * slot); all other accents stay grayscale or quiet status tints.
+ */
 const colorStyles = {
   cyan: {
     tile: 'bg-hermes-red text-white',
     value: 'text-hermes-ink'
   },
   emerald: {
-    tile: 'bg-emerald-700 text-white',
-    value: 'text-emerald-700'
+    tile: 'bg-white text-hermes-ink',
+    value: 'text-hermes-ink'
   },
   violet: {
-    tile: 'bg-violet-700 text-white',
-    value: 'text-violet-700'
+    tile: 'bg-white text-hermes-ink',
+    value: 'text-hermes-ink'
   },
   amber: {
-    tile: 'bg-amber-500 text-black',
-    value: 'text-amber-600'
+    tile: 'bg-white text-hermes-ink',
+    value: 'text-hermes-ink'
   },
   rose: {
     tile: 'bg-rose-600 text-white',
-    value: 'text-rose-600'
+    value: 'text-rose-700'
   }
 };
 
@@ -73,7 +78,7 @@ export const MetricCard: React.FC<MetricCardProps> = ({
 
       <p className="text-xs text-black/60 font-medium border-t border-black/15 pt-3 mt-3 flex items-center justify-between gap-2">
         <span className="truncate">{subtitle}</span>
-        <span className={`w-1.5 h-1.5 shrink-0 transition-colors group-hover:bg-black ${accentColor === 'rose' ? 'bg-rose-600' : accentColor === 'amber' ? 'bg-amber-500' : 'bg-black/30'}`} />
+        <span className={`w-1.5 h-1.5 shrink-0 transition-colors group-hover:bg-black ${accentColor === 'rose' ? 'bg-rose-600' : 'bg-black/30'}`} />
       </p>
     </div>
   );

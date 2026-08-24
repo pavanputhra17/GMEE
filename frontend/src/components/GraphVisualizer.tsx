@@ -109,8 +109,8 @@ export const GraphVisualizer: React.FC = () => {
                     y1={node.y}
                     x2={target.x}
                     y2={target.y}
-                    stroke={isSelected ? '#C1121F' : '#0a0a14'}
-                    strokeOpacity={isSelected ? 1 : 0.18}
+                    stroke="#0a0a14"
+                    strokeOpacity={isSelected ? 0.85 : 0.18}
                     strokeWidth={isSelected ? 1.75 : 1}
                   />
                 );
@@ -132,17 +132,17 @@ export const GraphVisualizer: React.FC = () => {
                   {isSelected && (
                     <>
                       <circle cx={node.x} cy={node.y} r="21" fill="none" stroke="#ffffff" strokeWidth="8" strokeOpacity="0.55" />
-                      <circle cx={node.x} cy={node.y} r="21" fill="none" stroke="#C1121F" strokeWidth="1.75" />
+                      <circle cx={node.x} cy={node.y} r="21" fill="none" stroke="#0a0a14" strokeWidth="1.75" />
                     </>
                   )}
-                  {/* High-risk halo */}
+                  {/* High-risk halo — quiet rose, not brand red */}
                   {!isSelected && node.riskScore > 90 && (
                     <circle
                       cx={node.x}
                       cy={node.y}
                       r="17"
                       fill="none"
-                      stroke="#e11d48"
+                      stroke="#9f1239"
                       strokeWidth="1"
                       strokeDasharray="3 3"
                       className="opacity-70 animate-pulse"
@@ -202,7 +202,7 @@ export const GraphVisualizer: React.FC = () => {
               selectedNode.type === 'bot' ? 'bg-rose-100 text-rose-800' :
               selectedNode.type === 'source' ? 'bg-violet-100 text-violet-800' :
               selectedNode.type === 'actor' ? 'bg-teal-100 text-teal-800' :
-              'bg-hermes-red text-hermes-yellow'
+              'bg-hermes-ink text-hermes-paper'
             }`}>
               Type: {selectedNode.type}
             </span>
