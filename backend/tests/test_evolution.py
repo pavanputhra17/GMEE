@@ -1,6 +1,6 @@
 import uuid
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -9,6 +9,7 @@ from app.models.article import Article
 from app.models.claim import Claim
 from app.models.evolution import (
     ClaimClusterAssignment,
+    ClaimClusterRun,
     ClaimRelationship,
     RelationshipTypeEnum,
 )
@@ -37,26 +38,33 @@ async def test_orchestrator_guards():
     # 2. Test debounce guard
     mock_db.scalar.side_effect = [
         40,  # total claims > 30 (passes corpus check)
-        AsyncMock(claims_in_corpus=35, run_at=datetime.now(UTC))  # last run claims
+        ClaimClusterRun(claims_in_corpus=35, run_at=datetime.now(UTC))  # last run claims
     ]
     # new claims = 40 - 35 = 5 (less than 10 threshold)
     res = await orchestrator.run_evolution_cycle(mock_db)
     assert res["status"] == "debounced"
     assert res["new_claims"] == 5
-
     # 3. Test force bypass
     mock_db.scalar.side_effect = [
         40,  # total claims > 30
     ]
+    exec_result = MagicMock()
+    exec_result.scalars.return_value.all.return_value = []
+    art_result = MagicMock()
+    art_result.scalars.return_value.all.return_value = []
+    src_result = MagicMock()
+    src_result.scalars.return_value.all.return_value = []
+    mock_db.execute = AsyncMock(side_effect=[exec_result, art_result, src_result])
     with patch.object(orchestrator, 'cluster_service') as mock_cluster, \
          patch.object(orchestrator, 'mutation_detector') as mock_mutation, \
          patch.object(orchestrator, 'neo4j_writer') as mock_neo4j:
         
-        mock_cluster_run = AsyncMock()
+        mock_cluster_run = MagicMock()
         mock_cluster_run.assignments = []
-        mock_cluster.run_clustering.return_value = mock_cluster_run
-        mock_mutation.run_mutation_detection.return_value = []
-        mock_neo4j.sync_to_graph.return_value = True
+        # The orchestrator awaits these calls, so their mocks must be AsyncMock.
+        mock_cluster.run_clustering = AsyncMock(return_value=mock_cluster_run)
+        mock_mutation.run_mutation_detection = AsyncMock(return_value=[])
+        mock_neo4j.sync_to_graph = AsyncMock(return_value=True)
 
         res = await orchestrator.run_evolution_cycle(mock_db, force=True)
         assert res["status"] == "success"
@@ -96,16 +104,20 @@ async def test_mutation_detector_logic():
 
     relationships = await detector.run_mutation_detection(mock_db, assignments, claims_by_id, articles_by_id)
     
-    # We expect c1 -> c0 (EVOLVED_FROM)
-    # We expect c2 -> c0 (SIMILAR_TO)
-    # We expect c3 to have nothing with c0
+    # Semantics: each claim links EVOLVED_FROM its single best predecessor
+    # (cos-sim >= EVOLUTION_SIMILARITY_THRESHOLD). With this data:
+    #   c1 vs c0: ~0.994 >= 0.85 -> EVOLVED_FROM (c1 -> c0)
+    #   c2 vs c1: ~0.861 >= 0.85 -> EVOLVED_FROM (c2 -> c1)   [mutation chain]
+    #   c2 vs c0: 0.80 in [0.75, 0.85) -> SIMILAR_TO (c2 -> c0)
+    #   c3: nothing above thresholds
     
     evo_rels = [r for r in relationships if r.relationship_type == RelationshipTypeEnum.EVOLVED_FROM]
     sim_rels = [r for r in relationships if r.relationship_type == RelationshipTypeEnum.SIMILAR_TO]
     
-    assert len(evo_rels) == 1
-    assert evo_rels[0].from_claim_id == c1.id
-    assert evo_rels[0].to_claim_id == c0.id
+    assert len(evo_rels) == 2
+    evo_pairs = {(r.from_claim_id, r.to_claim_id) for r in evo_rels}
+    assert (c1.id, c0.id) in evo_pairs
+    assert (c2.id, c1.id) in evo_pairs
     
     # Check temporal ordering (from_claim is later than to_claim)
     assert evo_rels[0].from_claim_id != c0.id
@@ -126,7 +138,11 @@ async def test_neo4j_writer_idempotency():
         mock_driver = AsyncMock()
         mock_get_driver.return_value = mock_driver
         mock_session = AsyncMock()
-        mock_driver.session.return_value.__aenter__.return_value = mock_session
+        # driver.session() is a SYNC factory returning an async context manager;
+        # on a plain AsyncMock the call itself would become a coroutine.
+        mock_session_cm = AsyncMock()
+        mock_session_cm.__aenter__.return_value = mock_session
+        mock_driver.session = MagicMock(return_value=mock_session_cm)
         
         c0 = Claim(id=uuid.uuid4(), article_id=uuid.uuid4(), claim_text="test", extracted_at=datetime.now(UTC), entities=[])
         art = Article(id=c0.article_id, source_id=uuid.uuid4())
@@ -159,17 +175,26 @@ async def test_orchestrator_resilience_to_neo4j_failure():
     mock_db = AsyncMock()
     mock_db.scalar.side_effect = [40]  # total claims > 30
 
+    exec_result = MagicMock()
+    exec_result.scalars.return_value.all.return_value = []
+    art_result = MagicMock()
+    art_result.scalars.return_value.all.return_value = []
+    src_result = MagicMock()
+    src_result.scalars.return_value.all.return_value = []
+    mock_db.execute = AsyncMock(side_effect=[exec_result, art_result, src_result])
+
     with patch.object(orchestrator, 'cluster_service') as mock_cluster, \
          patch.object(orchestrator, 'mutation_detector') as mock_mutation, \
          patch.object(orchestrator, 'neo4j_writer') as mock_neo4j:
         
-        mock_cluster_run = AsyncMock()
+        mock_cluster_run = MagicMock()
         mock_cluster_run.assignments = []
-        mock_cluster.run_clustering.return_value = mock_cluster_run
-        mock_mutation.run_mutation_detection.return_value = []
-        
+        # The orchestrator awaits these calls, so their mocks must be AsyncMock.
+        mock_cluster.run_clustering = AsyncMock(return_value=mock_cluster_run)
+        mock_mutation.run_mutation_detection = AsyncMock(return_value=[])
+
         # Mock Neo4j to fail
-        mock_neo4j.sync_to_graph.return_value = False
+        mock_neo4j.sync_to_graph = AsyncMock(return_value=False)
 
         res = await orchestrator.run_evolution_cycle(mock_db, force=True)
         
