@@ -39,5 +39,5 @@ jobs:
       - name: Build
         run: npm run build
         
-      - name: Test
-        run: npm run test
+      - name: Test with coverage
+        run: npx vitest run --coverage --coverage.thresholds.lines=60 --coverage.thresholds.functions=60 --coverage.thresholds.branches=50 --coverage.thresholds.statements=60

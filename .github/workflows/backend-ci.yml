@@ -37,4 +37,4 @@ jobs:
         run: mypy .
         
       - name: Test with pytest
-        run: pytest
+        run: pytest --cov=app --cov-report=term --cov-fail-under=70
