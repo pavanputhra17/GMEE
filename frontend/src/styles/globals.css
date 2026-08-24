@@ -2,8 +2,202 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ------------------------------ Design tokens ----------------------------- */
+:root {
+  --hermes-red: #C1121F;
+  --hermes-yellow: #edff45;
+  --hermes-paper: #f5f5f5;
+  --hermes-ink: #0a0a14;
+}
+
 @layer base {
+  html {
+    background: var(--hermes-paper);
+  }
+
   body {
-    @apply bg-slate-50 text-slate-900;
+    @apply bg-hermes-paper text-hermes-ink font-sans antialiased;
+    min-height: 100vh;
+  }
+
+  h1, h2, h3, h4, .font-display {
+    font-family: 'Instrument Serif', Georgia, serif;
+    font-weight: 400;
+    letter-spacing: -0.01em;
+  }
+
+  code, pre, .font-mono, select, input, button {
+    font-family: 'Courier Prime', ui-monospace, monospace;
+  }
+
+  ::selection {
+    background: var(--hermes-yellow);
+    color: #000;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--hermes-red);
+    outline-offset: 2px;
+  }
+}
+
+@layer utilities {
+  /* Flat card with hard 1px border + offset shadow — no blur, no glass */
+  .card-brutal {
+    @apply bg-white border border-black/90 shadow-[4px_4px_0_0_rgba(10,10,20,1)];
+  }
+
+  .card-brutal-hover {
+    @apply transition-all duration-150 hover:-translate-x-0.5 hover:-translate-y-0.5 hover:shadow-[6px_6px_0_0_rgba(10,10,20,1)];
+  }
+
+  .btn-brutal {
+    @apply inline-flex items-center justify-center gap-2 border border-black/90 font-mono text-xs font-bold uppercase tracking-wider px-4 py-2 transition-all duration-150 active:translate-x-[2px] active:translate-y-[2px] active:shadow-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed bg-hermes-yellow text-black shadow-[3px_3px_0_0_rgba(10,10,20,1)];
+  }
+
+  .btn-ghost-brutal {
+    @apply inline-flex items-center justify-center gap-2 border border-black/60 bg-transparent font-mono text-xs font-bold uppercase tracking-wider px-4 py-2 transition-all duration-150 hover:border-black active:translate-x-[2px] active:translate-y-[2px] active:shadow-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed text-black;
+  }
+
+  .chip-brutal {
+    @apply inline-flex items-center gap-1.5 border border-black/80 px-2 py-0.5 font-mono text-[10px] font-bold uppercase tracking-widest;
+  }
+
+  /* Status dot with expanding ring */
+  .pulse-dot {
+    position: relative;
+    display: inline-block;
+    width: 0.5rem;
+    height: 0.5rem;
+    border-radius: 9999px;
+  }
+  .pulse-dot::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: 9999px;
+    animation: pulse-ring 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  }
+  .pulse-dot-emerald { background-color: #059669; }
+  .pulse-dot-emerald::after { box-shadow: 0 0 0 0 rgba(5, 150, 105, 0.55); animation-name: pulse-ring-emerald; }
+  .pulse-dot-amber { background-color: #d97706; }
+  .pulse-dot-amber::after { box-shadow: 0 0 0 0 rgba(217, 119, 6, 0.55); animation-name: pulse-ring-amber; }
+  .pulse-dot-rose { background-color: #e11d48; }
+  .pulse-dot-rose::after { box-shadow: 0 0 0 0 rgba(225, 29, 72, 0.55); animation-name: pulse-ring-rose; }
+
+  /* Skeleton shimmer — ink on paper */
+  .shimmer {
+    position: relative;
+    overflow: hidden;
+    background: rgba(10, 10, 20, 0.08);
+  }
+  .shimmer::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    transform: translateX(-100%);
+    background: linear-gradient(
+      90deg,
+      transparent,
+      rgba(10, 10, 20, 0.06) 45%,
+      rgba(193, 18, 31, 0.14) 50%,
+      rgba(10, 10, 20, 0.06) 55%,
+      transparent
+    );
+    animation: shimmer-sweep 1.8s ease-in-out infinite;
+  }
+
+  /* Fractal noise grain — straight from hermes-agent.nousresearch.com */
+  .grain-overlay {
+    pointer-events: none;
+    opacity: 0.05;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.72' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+    background-size: 12.8rem;
+  }
+
+  /* Marquee ticker */
+  .marquee-track {
+    display: flex;
+    width: max-content;
+    animation: marquee-scroll 55s linear infinite;
+  }
+  [dir='rtl'] .marquee-track,
+  .marquee-paused .marquee-track {
+    animation-play-state: paused;
+  }
+
+  /* Staggered feed entry entrance */
+  .feed-enter {
+    animation: feed-slide 0.45s cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+
+  /* Subtle engineering grid (kept for graph canvas backdrop) */
+  .grid-bg {
+    background-image:
+      linear-gradient(rgba(10, 10, 20, 0.07) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(10, 10, 20, 0.07) 1px, transparent 1px);
+    background-size: 32px 32px;
+  }
+}
+
+@keyframes pulse-ring-emerald {
+  0% { box-shadow: 0 0 0 0 rgba(5, 150, 105, 0.5); }
+  70% { box-shadow: 0 0 0 7px rgba(5, 150, 105, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(5, 150, 105, 0); }
+}
+@keyframes pulse-ring-amber {
+  0% { box-shadow: 0 0 0 0 rgba(217, 119, 6, 0.5); }
+  70% { box-shadow: 0 0 0 7px rgba(217, 119, 6, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(217, 119, 6, 0); }
+}
+@keyframes pulse-ring-rose {
+  0% { box-shadow: 0 0 0 0 rgba(225, 29, 72, 0.5); }
+  70% { box-shadow: 0 0 0 7px rgba(225, 29, 72, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(225, 29, 72, 0); }
+}
+
+@keyframes shimmer-sweep {
+  100% { transform: translateX(100%); }
+}
+
+@keyframes feed-slide {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes marquee-scroll {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
+}
+
+/* Custom scrollbars — ink on paper */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: rgba(10, 10, 20, 0.04);
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(10, 10, 20, 0.75);
+  border-radius: 0;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--hermes-red);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .marquee-track,
+  .shimmer::after,
+  .pulse-dot::after,
+  .feed-enter {
+    animation: none !important;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
   }
 }

@@ -1,1 +1,1 @@
-{"root":["./src/app.tsx","./src/main.tsx","./src/vite-env.d.ts","./src/api/client.ts","./src/pages/systemhealth.tsx","./tests/app.test.tsx"],"version":"5.9.3"}
+{"root":["./src/app.tsx","./src/main.tsx","./src/vite-env.d.ts","./src/api/client.ts","./src/components/graphvisualizer.tsx","./src/components/header.tsx","./src/components/liveauditfeed.tsx","./src/components/metriccard.tsx","./src/components/vectortelemetry.tsx","./src/pages/systemhealth.tsx","./tests/app.test.tsx"],"version":"5.9.3"}

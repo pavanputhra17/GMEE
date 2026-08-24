@@ -12,12 +12,13 @@ const queryClient = new QueryClient({
 });
 
 describe('App Component', () => {
-  it('renders SystemHealth page', () => {
+  it('renders GMEE Command Center page', () => {
     render(
       <QueryClientProvider client={queryClient}>
         <App />
       </QueryClientProvider>
     );
-    expect(screen.getByText('System Health')).toBeDefined();
+    expect(screen.getByText('GMEE')).toBeDefined();
+    expect(screen.getByText('Global Misinformation Evolution Engine')).toBeDefined();
   });
 });
