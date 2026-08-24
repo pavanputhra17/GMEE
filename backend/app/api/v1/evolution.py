@@ -5,18 +5,18 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.api.deps import get_current_user, get_db, require_role
+from app.api.deps import get_current_user, get_db_session, require_role
 from app.models.evolution import ClaimClusterRun
 from app.models.user import RoleEnum
 from app.services.evolution.orchestrator import EvolutionOrchestrator
 
-router = APIRouter(prefix="/evolution", tags=["evolution"])
+router = APIRouter()
 
 
 @router.post("/trigger", dependencies=[Depends(require_role([RoleEnum.admin]))])
 async def trigger_evolution(
     force: bool = Query(False, description="Bypass debounce guard (minimum-corpus guard is still respected)"),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db_session)
 ) -> Any:
     orchestrator = EvolutionOrchestrator()
     result = await orchestrator.run_evolution_cycle(db, force=force)
@@ -24,7 +24,7 @@ async def trigger_evolution(
 
 
 @router.get("/status", dependencies=[Depends(get_current_user)])
-async def get_evolution_status(db: AsyncSession = Depends(get_db)) -> Any:
+async def get_evolution_status(db: AsyncSession = Depends(get_db_session)) -> Any:
     stmt = select(ClaimClusterRun).order_by(ClaimClusterRun.run_at.desc()).limit(1)
     run = await db.scalar(stmt)
     
@@ -41,7 +41,7 @@ async def get_evolution_status(db: AsyncSession = Depends(get_db)) -> Any:
 
 
 @router.get("/clusters", dependencies=[Depends(get_current_user)])
-async def get_clusters(db: AsyncSession = Depends(get_db)) -> Any:
+async def get_clusters(db: AsyncSession = Depends(get_db_session)) -> Any:
     # Fetch the latest run with assignments
     stmt = (
         select(ClaimClusterRun)

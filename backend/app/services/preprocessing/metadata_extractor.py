@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlparse
 
@@ -41,14 +41,12 @@ def extract_or_repair_published_at(
             try:
                 # If it's a unix timestamp (e.g. reddit created_utc)
                 if isinstance(val, (int, float)):
-                    return datetime.fromtimestamp(val)
+                    return datetime.fromtimestamp(val, tz=UTC)
                 # If it's a string, attempt to parse
                 if isinstance(val, str):
                     parsed_date = dateutil_parse(val)
-                    if parsed_date is not None:
-                        from datetime import datetime
-                        if isinstance(parsed_date, datetime):
-                            return parsed_date
+                    if parsed_date is not None and isinstance(parsed_date, datetime):
+                        return parsed_date
             except Exception:
                 continue
                 

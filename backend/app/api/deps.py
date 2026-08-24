@@ -68,8 +68,16 @@ async def get_current_user(
         
     return user
 
-def require_role(*allowed_roles: RoleEnum | str) -> Callable[..., Any]:
-    allowed = [r.value if isinstance(r, RoleEnum) else r for r in allowed_roles]
+def require_role(*allowed_roles: RoleEnum | str | list[RoleEnum | str]) -> Callable[..., Any]:
+    # Normalize: accept bare roles and/or lists of roles (callers use both).
+    raw: list[RoleEnum | str] = []
+    for item in allowed_roles:
+        if isinstance(item, (list, tuple)):
+            raw.extend(item)
+        else:
+            raw.append(item)
+    allowed = [r.value if isinstance(r, RoleEnum) else r for r in raw]
+
     def role_checker(current_user: User = Depends(get_current_user)) -> User:
         if current_user.role.value not in allowed:
             raise HTTPException(
