@@ -52,3 +52,7 @@ docker-volumes/
 postgres-data/
 neo4j-data/
 redis-data/
+
+# TypeScript build artifacts
+tsconfig.tsbuildinfo
+*.tsbuildinfo

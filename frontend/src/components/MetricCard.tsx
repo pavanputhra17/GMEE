@@ -13,8 +13,8 @@ interface MetricCardProps {
 
 const colorStyles = {
   cyan: {
-    tile: 'bg-hermes-red text-hermes-yellow',
-    value: 'text-hermes-red'
+    tile: 'bg-hermes-red text-white',
+    value: 'text-hermes-ink'
   },
   emerald: {
     tile: 'bg-emerald-700 text-white',

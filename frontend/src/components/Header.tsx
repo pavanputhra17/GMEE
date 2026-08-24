@@ -55,7 +55,7 @@ export const Header: React.FC<HeaderProps> = ({
     <header className="sticky top-0 z-40 -mx-4 md:-mx-8 lg:-mx-12 mb-8">
       <div className="bg-hermes-paper/95 backdrop-blur-sm border-b border-black/90">
         {/* Marquee ticker — Hermes-site signature */}
-        <div className="overflow-hidden border-b border-black/20 bg-hermes-red text-hermes-yellow">
+        <div className="overflow-hidden border-b border-black/20 bg-hermes-ink text-hermes-paper">
           <div className="marquee-track py-1">
             {[0, 1].map(dup => (
               <div key={dup} className="flex shrink-0 items-center" aria-hidden={dup === 1}>
@@ -74,7 +74,7 @@ export const Header: React.FC<HeaderProps> = ({
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-5 border-b border-black/15">
             <div className="flex items-center gap-4">
               <div className={`flex items-center justify-center w-12 h-12 border border-black/90 shadow-[3px_3px_0_0_rgba(10,10,20,1)] ${
-                demoMode ? 'bg-hermes-yellow' : 'bg-hermes-red'
+                demoMode ? 'bg-hermes-yellow' : 'bg-hermes-ink'
               }`}>
                 <Activity className={`w-6 h-6 ${demoMode ? 'text-black' : 'text-hermes-yellow'}`} />
               </div>
@@ -89,7 +89,7 @@ export const Header: React.FC<HeaderProps> = ({
                       Demo Telemetry
                     </span>
                   ) : (
-                    <span className="chip-brutal bg-hermes-red text-hermes-yellow">v1.0 telemetry</span>
+                    <span className="chip-brutal bg-hermes-ink text-hermes-paper">v1.0 telemetry</span>
                   )}
                 </div>
                 <p className="text-xs font-mono uppercase tracking-widest text-black/60 mt-1">
@@ -161,7 +161,7 @@ const TabButton: React.FC<{
       onClick={() => setActiveTab(id)}
       className={`flex items-center gap-2.5 px-4 py-2.5 text-xs md:text-sm font-mono font-bold uppercase tracking-wide transition-colors whitespace-nowrap cursor-pointer border-b-2 -mb-px ${
         isActive
-          ? 'border-hermes-red text-hermes-red bg-white/70'
+          ? 'border-hermes-red text-hermes-ink bg-white'
           : `border-transparent text-black/50 hover:text-black ${first ? '' : ''}`
       }`}
     >
@@ -169,7 +169,7 @@ const TabButton: React.FC<{
       <span>{label}</span>
       {badge && (
         <span className={`px-1.5 py-0.5 text-[10px] border ${
-          isActive ? 'bg-hermes-red text-hermes-yellow border-hermes-red' : 'bg-black/5 text-black/50 border-black/20'
+          isActive ? 'bg-hermes-ink text-hermes-paper border-hermes-red' : 'bg-black/5 text-black/50 border-black/20'
         }`}>
           {badge}
         </span>

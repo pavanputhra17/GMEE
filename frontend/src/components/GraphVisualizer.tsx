@@ -22,9 +22,9 @@ const mockNodes: Node[] = [
 
 const TYPE_COLOR: Record<Node['type'], string> = {
   claim: '#C1121F',
-  bot: '#e11d48',
-  source: '#7c3aed',
-  actor: '#0f766e'
+  bot: '#0a0a14',
+  source: '#6b7280',
+  actor: '#374151'
 };
 
 export const GraphVisualizer: React.FC = () => {
@@ -43,7 +43,7 @@ export const GraphVisualizer: React.FC = () => {
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-black/15">
         <div>
           <div className="flex items-center gap-2 mb-1">
-            <Network className="w-5 h-5 text-hermes-red" />
+            <Network className="w-5 h-5" />
             <h2 className="text-2xl font-display">Neo4j Graph Topology Visualizer</h2>
           </div>
           <p className="text-xs font-mono text-black/60 uppercase tracking-wider">
@@ -56,7 +56,7 @@ export const GraphVisualizer: React.FC = () => {
           <button
             onClick={() => setActiveFilter('all')}
             className={`px-3 py-1.5 font-mono uppercase tracking-wide transition-colors cursor-pointer ${
-              activeFilter === 'all' ? 'bg-hermes-red text-hermes-yellow' : 'hover:bg-black/5'
+              activeFilter === 'all' ? 'bg-hermes-ink text-hermes-paper' : 'hover:bg-black/5'
             }`}
           >
             All Entities
@@ -64,7 +64,7 @@ export const GraphVisualizer: React.FC = () => {
           <button
             onClick={() => setActiveFilter('claim')}
             className={`px-3 py-1.5 font-mono uppercase tracking-wide transition-colors cursor-pointer border-l border-black/90 ${
-              activeFilter === 'claim' ? 'bg-hermes-red text-hermes-yellow' : 'hover:bg-black/5'
+              activeFilter === 'claim' ? 'bg-hermes-ink text-hermes-paper' : 'hover:bg-black/5'
             }`}
           >
             Claims
@@ -72,7 +72,7 @@ export const GraphVisualizer: React.FC = () => {
           <button
             onClick={() => setActiveFilter('actor')}
             className={`px-3 py-1.5 font-mono uppercase tracking-wide transition-colors cursor-pointer border-l border-black/90 ${
-              activeFilter === 'actor' ? 'bg-hermes-red text-hermes-yellow' : 'hover:bg-black/5'
+              activeFilter === 'actor' ? 'bg-hermes-ink text-hermes-paper' : 'hover:bg-black/5'
             }`}
           >
             Actors &amp; Bots
@@ -131,7 +131,7 @@ export const GraphVisualizer: React.FC = () => {
                   {/* Selection ring */}
                   {isSelected && (
                     <>
-                      <circle cx={node.x} cy={node.y} r="21" fill="none" stroke="#edff45" strokeWidth="8" strokeOpacity="0.55" />
+                      <circle cx={node.x} cy={node.y} r="21" fill="none" stroke="#ffffff" strokeWidth="8" strokeOpacity="0.55" />
                       <circle cx={node.x} cy={node.y} r="21" fill="none" stroke="#C1121F" strokeWidth="1.75" />
                     </>
                   )}
@@ -181,16 +181,16 @@ export const GraphVisualizer: React.FC = () => {
           {/* Legend */}
           <div className="absolute bottom-3 left-3 bg-white border border-black/90 px-3 py-1.5 flex items-center gap-4 text-[10px] font-mono uppercase tracking-wider text-black/70 shadow-[2px_2px_0_0_rgba(10,10,20,1)]">
             <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 bg-[#C1121F]" /> Claims</span>
-            <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 bg-[#e11d48]" /> Coordinated Bots</span>
-            <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 bg-[#7c3aed]" /> Sources</span>
-            <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 bg-[#0f766e]" /> Actors</span>
+            <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 bg-[#0a0a14]" /> Coordinated Bots</span>
+            <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 bg-[#6b7280]" /> Sources</span>
+            <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 bg-[#374151]" /> Actors</span>
           </div>
         </div>
 
         {/* Selected Entity Inspector */}
         <div className="border border-black/90 bg-hermes-paper p-5 flex flex-col justify-between shadow-[4px_4px_0_0_rgba(10,10,20,1)]">
           <div>
-            <div className="flex items-center justify-between pb-3 border-b border-black/15 text-xs font-mono font-bold uppercase tracking-widest text-hermes-red">
+            <div className="flex items-center justify-between pb-3 border-b border-black/15 text-xs font-mono font-bold uppercase tracking-widest text-hermes-ink">
               <span className="flex items-center gap-1.5">
                 <Info className="w-4 h-4" /> Node Telemetry
               </span>
@@ -217,7 +217,7 @@ export const GraphVisualizer: React.FC = () => {
 
               <div className="flex justify-between items-center bg-white border border-black/40 p-2.5">
                 <span className="text-black/60">Connected Neighbors</span>
-                <span className="font-bold text-hermes-red">{selectedNode.connections.length} edges</span>
+                <span className="font-bold">{selectedNode.connections.length} edges</span>
               </div>
 
               <div className="flex justify-between items-center bg-white border border-black/40 p-2.5">

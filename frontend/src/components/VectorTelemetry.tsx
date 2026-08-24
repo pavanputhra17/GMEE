@@ -18,7 +18,7 @@ export const VectorTelemetry: React.FC = () => {
           </p>
         </div>
 
-        <span className="chip-brutal bg-violet-700 text-white border-black/90 w-fit">
+        <span className="chip-brutal bg-hermes-ink text-hermes-paper border-black/90 w-fit">
           pgvector v0.7.0 / Postgres 16
         </span>
       </div>
@@ -64,7 +64,7 @@ const VectorStatCard: React.FC<{
     <div className="border border-black/90 bg-white p-4 flex flex-col justify-between card-brutal-hover">
       <div className="flex items-center justify-between text-black/50 mb-2">
         <span className="text-[10px] font-mono uppercase tracking-widest">{label}</span>
-        <Icon className="w-4 h-4 text-hermes-red" />
+        <Icon className="w-4 h-4 text-hermes-ink" />
       </div>
       <div>
         <div className="text-xl font-display tabular-nums">{value}</div>
@@ -82,7 +82,7 @@ const SimilarityResult: React.FC<{
   return (
     <div className="p-3 bg-white border border-black/40 flex flex-col justify-between">
       <div>
-        <div className="font-bold text-[11px] mb-1 text-hermes-red">{title}</div>
+        <div className="font-bold text-[11px] mb-1 text-hermes-ink">{title}</div>
         <p className="text-black/70 text-[11px] line-clamp-2">{text}</p>
       </div>
       <div className="text-[10px] text-black/50 pt-2 mt-2 border-t border-black/15 flex justify-between font-mono">

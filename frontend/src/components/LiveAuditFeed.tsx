@@ -19,8 +19,8 @@ const initialLogs: AuditLog[] = [
 
 const TYPE_STYLES = {
   info: {
-    border: 'border-l-hermes-red',
-    dot: 'bg-hermes-red'
+    border: 'border-l-hermes-ink',
+    dot: 'bg-hermes-ink'
   },
   success: {
     border: 'border-l-emerald-600',
@@ -61,7 +61,7 @@ export const LiveAuditFeed: React.FC = () => {
     <div className="card-brutal p-6 flex flex-col gap-4">
       <div className="flex items-center justify-between pb-3 border-b border-black/15">
         <div className="flex items-center gap-2">
-          <Terminal className="w-5 h-5 text-hermes-red" />
+          <Terminal className="w-5 h-5" />
           <h2 className="text-2xl font-display">Live Telemetry Audit Stream</h2>
         </div>
 
@@ -90,7 +90,7 @@ export const LiveAuditFeed: React.FC = () => {
               <span className="text-black/40 whitespace-nowrap text-[11px] tabular-nums">{log.timestamp}</span>
               <span className={`px-1.5 py-0.5 text-[10px] font-bold whitespace-nowrap border ${
                 log.source === 'POSTGRES' ? 'bg-violet-100 text-violet-800 border-violet-800/40' :
-                log.source === 'NEO4J' ? 'bg-hermes-red text-hermes-yellow border-hermes-red' :
+                log.source === 'NEO4J' ? 'bg-hermes-ink text-hermes-paper border-hermes-ink' :
                 log.source === 'REDIS' ? 'bg-amber-100 text-amber-800 border-amber-800/40' :
                 log.source === 'LLM_PIPELINE' ? 'bg-teal-100 text-teal-800 border-teal-800/40' :
                 'bg-black/5 text-black/60 border-black/20'
