@@ -5,6 +5,7 @@ from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, get_db_session, get_redis_client
+from app.core.ops_security import record_audit
 from app.models.user import User
 from app.schemas.auth import (
     LoginRequest,
@@ -30,7 +31,9 @@ async def register(
     db: AsyncSession = Depends(get_db_session)
 ) -> Any:
     device_info = request.headers.get("user-agent")
-    return await register_user(db, user_in, device_info)
+    result = await register_user(db, user_in, device_info)
+    await record_audit(db, actor=user_in.email, action="auth.register", request=request)
+    return result
 
 @router.post("/login", response_model=TokenResponse)
 async def login(
@@ -41,7 +44,11 @@ async def login(
 ) -> Any:
     ip = request.client.host if request.client else "unknown"
     device_info = request.headers.get("user-agent")
-    return await authenticate_user(db, redis, login_in, ip, device_info)
+    result = await authenticate_user(db, redis, login_in, ip, device_info)
+    await record_audit(
+        db, actor=login_in.email, action="auth.login", detail={"ip": ip}, request=request
+    )
+    return result
 
 @router.post("/refresh", response_model=TokenResponse)
 async def refresh(

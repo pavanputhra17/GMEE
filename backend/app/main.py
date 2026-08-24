@@ -4,9 +4,18 @@ from contextlib import asynccontextmanager
 from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.v1 import auth, collection, evolution, health, nlp, preprocessing
+from app.api.v1 import (
+    auth,
+    collection,
+    dashboard,
+    evolution,
+    health,
+    nlp,
+    preprocessing,
+)
 from app.core import scheduler
 from app.core.config import get_settings
+from app.core.ops_security import install_rate_limiter, install_security_headers
 from app.services.nlp.embedding_service import EmbeddingService
 from app.services.nlp.entity_extractor import EntityExtractor
 from app.services.seeder import seed_sources
@@ -36,8 +45,12 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    install_security_headers(app)
+    install_rate_limiter(app)
+
     api_router = APIRouter()
     api_router.include_router(health.router, prefix="/health", tags=["health"])
+    api_router.include_router(dashboard.router, prefix="/dashboard", tags=["dashboard"])
     api_router.include_router(auth.router, prefix="/auth", tags=["auth"])
     api_router.include_router(collection.router, prefix="/collection", tags=["Collection"])
     api_router.include_router(preprocessing.router, prefix="/preprocessing", tags=["Preprocessing"])
