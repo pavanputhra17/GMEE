@@ -158,3 +158,70 @@ async def claims_graph(limit: int = 1200):
         "edges": edges,
         "counts": {"nodes": len(nodes), "edges": len(edges)},
     }
+
+
+@router.get("/timeline")
+async def timeline_clusters(limit: int = 60):
+    """Story clusters ordered newest-first for the 3D timeline tunnel.
+
+    Each ring = one hub story (most-linked article of its connected group),
+    with member articles from other outlets. Ordered by newest publication
+    in the cluster. The UI renders rings as depth layers: top = most recent.
+    """
+    driver = await neo4j_client.get_driver()
+
+    async def _run(tx):
+        res = await tx.run(
+            """
+            MATCH (a:Article)-[:SIMILAR]-(b:Article)
+            WITH a, count(b) AS deg
+            WHERE deg >= 3
+            MATCH (a)-[s:SIMILAR]-(n:Article)
+            WITH a, a.title AS title, a.domain AS domain, a.url AS url,
+                 a.publishedAt AS published_at, deg,
+                 collect({id: n.id, title: n.title, domain: n.domain,
+                          url: n.url, publishedAt: n.publishedAt,
+                          score: s.score})[0..8] AS members
+            RETURN a.id AS id, title, domain, url, published_at, deg, members
+            ORDER BY published_at DESC
+            LIMIT $lim
+            """,
+            lim=limit,
+        )
+        return await res.data()
+
+    async with driver.session() as ses:
+        rows = await ses.execute_read(_run)
+
+    clusters = []
+    for r in rows:
+        all_times = [r.get("published_at")] + [
+            m.get("publishedAt") for m in (r.get("members") or [])
+        ]
+        times = sorted(
+            [t for t in all_times if t], reverse=True
+        )
+        clusters.append(
+            {
+                "id": r["id"],
+                "title": _clean_text(r.get("title"), 160) or "",
+                "domain": _clean_text(r.get("domain"), 80),
+                "url": r.get("url"),
+                "published_at": str(r.get("published_at")) if r.get("published_at") else None,
+                "newest_member_at": str(times[0]) if times else None,
+                "deg": r.get("deg", 0),
+                "members": [
+                    {
+                        "id": m.get("id"),
+                        "title": _clean_text(m.get("title"), 140) or "",
+                        "domain": _clean_text(m.get("domain"), 80),
+                        "url": m.get("url"),
+                        "published_at": str(m.get("publishedAt")) if m.get("publishedAt") else None,
+                        "score": round(float(m.get("score") or 0), 3),
+                    }
+                    for m in (r.get("members") or [])
+                ],
+            }
+        )
+
+    return {"clusters": clusters, "count": len(clusters)}
