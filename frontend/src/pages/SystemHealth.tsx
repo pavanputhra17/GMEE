@@ -10,6 +10,7 @@ import { LiveAuditFeed } from '../components/LiveAuditFeed';
 import { CacheTelemetry } from '../components/CacheTelemetry';
 import CorpusExplorer from '../components/CorpusExplorer';
 import { FactCheck } from '../components/FactCheck';
+import FullCorpusGraph from '../components/FullCorpusGraph';
 import AsciiEqualizer from '../components/AsciiEqualizer';
 import {
   Database,
@@ -110,7 +111,7 @@ export const SystemHealth: React.FC = () => {
   const [refetchInterval, setRefetchInterval] = useState<number>(5000);
   const [activeTab, setActiveTab] = useState<TabType>(() => {
     const m = window.location.hash.match(/^#\/dashboard\/([a-z]+)$/);
-    const valid: TabType[] = ['overview', 'factcheck', 'graph', 'vector', 'cache', 'corpus'];
+    const valid: TabType[] = ['overview', 'factcheck', 'fullgraph', 'graph', 'vector', 'cache', 'corpus'];
     return (m && valid.includes(m[1] as TabType) ? m[1] : 'overview') as TabType;
   });
 
@@ -363,6 +364,7 @@ export const SystemHealth: React.FC = () => {
               </div>
             )}
 
+            {activeTab === 'fullgraph' && <FullCorpusGraph />}
             {activeTab === 'factcheck' && <FactCheck />}
             {activeTab === 'corpus' && <CorpusExplorer />}
 

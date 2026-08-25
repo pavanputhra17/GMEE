@@ -41,6 +41,7 @@ async def load_claims(limit: int):
                                '[]'::json) AS entities
                     FROM claims c
                     JOIN articles a ON a.id = c.article_id
+                    WHERE c.verdict IS NULL
                     ORDER BY c.confidence DESC NULLS LAST
                     LIMIT :lim
                     """
@@ -158,7 +159,7 @@ async def main() -> None:
     limit = int(sys.argv[1]) if len(sys.argv) > 1 else 100
 
     claims = await load_claims(limit)
-    print(f"scoring {len(claims)} claims …")
+    print(f"scoring {len(claims)} unscored claims …")
 
     done = 0
     # two passes: first pass seeds track records with initial scoring,

@@ -11,11 +11,11 @@ from app.api.v1 import (
     corpus,
     dashboard,
     evolution,
+    graph,
     health,
     nlp,
     preprocessing,
 )
-from app.api.v1 import verdicts
 from app.core import scheduler
 from app.core.config import get_settings
 from app.core.ops_security import install_rate_limiter, install_security_headers
@@ -61,6 +61,7 @@ def create_app() -> FastAPI:
     api_router.include_router(evolution.router, prefix="/evolution", tags=["Evolution"])
     api_router.include_router(corpus.router, prefix="/corpus", tags=["Corpus"])
     api_router.include_router(verdicts.router, prefix="/verdicts", tags=["Verdicts"])
+    api_router.include_router(graph.router, prefix="/graph", tags=["Graph"])
 
     app.include_router(api_router, prefix="/api/v1")
 

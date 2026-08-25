@@ -1,8 +1,8 @@
 import React from 'react';
-import { Activity, RefreshCw, Layers, Database, Network, HardDrive, FlaskConical, Newspaper, ShieldCheck } from 'lucide-react';
+import { Activity, RefreshCw, Layers, Database, Network, HardDrive, FlaskConical, Newspaper, ShieldCheck, Share2 } from 'lucide-react';
 import { AsciiSpinner } from './AsciiSpinner';
 
-export type TabType = 'overview' | 'factcheck' | 'graph' | 'vector' | 'cache' | 'corpus';
+export type TabType = 'overview' | 'factcheck' | 'fullgraph' | 'graph' | 'vector' | 'cache' | 'corpus';
 
 interface HeaderProps {
   activeTab: TabType;
@@ -145,6 +145,7 @@ export const Header: React.FC<HeaderProps> = ({
             <TabButton id="graph" label="Neo4j Graph Engine" icon={Network} badge="7687" activeTab={activeTab} setActiveTab={setActiveTab} />
             <TabButton id="vector" label="Postgres Vector" icon={Database} badge="pgvector" activeTab={activeTab} setActiveTab={setActiveTab} />
             <TabButton id="cache" label="Redis Queue" icon={HardDrive} badge="6379" activeTab={activeTab} setActiveTab={setActiveTab} />
+            <TabButton id="fullgraph" label="Graph" icon={Share2} badge="6.4k nodes" activeTab={activeTab} setActiveTab={setActiveTab} />
             <TabButton id="factcheck" label="FactCheck" icon={ShieldCheck} badge="VERDICTS" activeTab={activeTab} setActiveTab={setActiveTab} />
             <TabButton id="corpus" label="Corpus" icon={Newspaper} badge="6.4k articles" activeTab={activeTab} setActiveTab={setActiveTab} />
           </nav>

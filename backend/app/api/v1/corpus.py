@@ -1,6 +1,8 @@
 """Read-only endpoints exposing the real corpus + story graph."""
 
+import html as htmllib
 import logging
+import re
 from collections import defaultdict
 
 from fastapi import APIRouter, HTTPException, Query
@@ -72,7 +74,11 @@ async def list_articles(
         "total": total or 0,
         "limit": limit,
         "offset": offset,
-        "items": [dict(r._mapping) for r in rows],
+        "items": [
+                    {**{k: _clean_text(v, 300) if isinstance(v, str) and k in ("title", "excerpt", "author", "domain") else v
+                        for k, v in dict(r._mapping).items()}}
+                    for r in rows
+                ],
         "domains": [{"name": d[0], "count": d[1]} for d in domains],
     }
 
@@ -285,3 +291,15 @@ async def graph_stats():
 
     async with driver.session() as ses:
         return await ses.execute_read(_run)
+
+
+_TAG_RE = re.compile(r"<[^a-z/!]|</?[a-z][^>]*>", re.IGNORECASE)
+
+
+def _clean_text(v, limit: int = 240) -> str | None:
+    """Strip any markup/entities from stored text before it reaches the UI."""
+    if not v:
+        return None
+    s2 = htmllib.unescape(_TAG_RE.sub(" ", str(v)))
+    s2 = re.sub(r"\s+", " ", s2).strip()
+    return (s2[:limit] or None)
