@@ -2,8 +2,8 @@ import uuid
 from datetime import datetime
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
@@ -19,6 +19,12 @@ class Claim(Base):
     confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     embedding: Mapped[Vector | None] = mapped_column(Vector(768), nullable=True)
     extracted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    # Verdict Engine (probabilistic misinformation assessment)
+    verdict: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    verdict_probability: Mapped[float | None] = mapped_column(Float, nullable=True)
+    verdict_rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
+    verdict_evidence: Mapped[dict | None] = mapped_column(JSON().with_variant(JSONB, "postgresql"), nullable=True)
     
     entities: Mapped[list["ClaimEntity"]] = relationship("ClaimEntity", back_populates="claim", cascade="all, delete-orphan")
 

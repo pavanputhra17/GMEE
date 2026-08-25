@@ -4,10 +4,13 @@
 
 /* ------------------------------ Design tokens ----------------------------- */
 :root {
-  --hermes-red: #C1121F;
-  --hermes-yellow: #edff45;
-  --hermes-paper: #f5f5f5;
-  --hermes-ink: #0a0a14;
+  --hermes-red: #A50E1D;
+  --hermes-red-bright: #E11D2E;
+  --hermes-red-deep: #6E0713;
+  --hermes-paper: #E7C9C4;
+  --hermes-blush: #F5E2DC;
+  --hermes-bone: #FFF7F2;
+  --hermes-ink: #1A0608;
 }
 
 @layer base {
@@ -31,65 +34,44 @@
   }
 
   ::selection {
-    background: var(--hermes-yellow);
-    color: #000;
+    background: var(--hermes-ink);
+    color: var(--hermes-bone);
   }
 
   :focus-visible {
-    outline: 2px solid var(--hermes-red);
+    outline: 2px solid var(--hermes-red-bright);
     outline-offset: 2px;
   }
 }
 
 @layer utilities {
-  /* Flat card with hard 1px border + offset shadow — no blur, no glass */
+  /* Flat card with hard keyline + offset shadow — no blur, no glass */
   .card-brutal {
-    @apply bg-white border border-black/90 shadow-[4px_4px_0_0_rgba(10,10,20,1)];
+    @apply bg-hermes-blush border border-hermes-ink/90 shadow-[4px_4px_0_0_rgba(26,6,8,1)];
   }
 
   .card-brutal-hover {
-    @apply transition-all duration-150 hover:-translate-x-0.5 hover:-translate-y-0.5 hover:shadow-[6px_6px_0_0_rgba(10,10,20,1)];
+    @apply transition-all duration-150 hover:-translate-x-0.5 hover:-translate-y-0.5 hover:shadow-[6px_6px_0_0_rgba(26,6,8,1)];
   }
 
+  /* Primary action — solid crimson block with bone type */
   .btn-brutal {
-    @apply inline-flex items-center justify-center gap-2 border border-black/90 font-mono text-xs font-bold uppercase tracking-wider px-4 py-2 transition-all duration-150 active:translate-x-[2px] active:translate-y-[2px] active:shadow-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed bg-hermes-yellow text-black shadow-[3px_3px_0_0_rgba(10,10,20,1)];
+    @apply inline-flex items-center justify-center gap-2 border border-hermes-ink/90 font-mono text-xs font-bold uppercase tracking-wider px-4 py-2 transition-all duration-150 active:translate-x-[2px] active:translate-y-[2px] active:shadow-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed bg-hermes-red text-hermes-bone shadow-[3px_3px_0_0_rgba(26,6,8,1)] hover:bg-hermes-red-deep;
   }
 
   .btn-ghost-brutal {
-    @apply inline-flex items-center justify-center gap-2 border border-black/60 bg-transparent font-mono text-xs font-bold uppercase tracking-wider px-4 py-2 transition-all duration-150 hover:border-black active:translate-x-[2px] active:translate-y-[2px] active:shadow-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed text-black;
+    @apply inline-flex items-center justify-center gap-2 border border-hermes-ink/60 bg-transparent font-mono text-xs font-bold uppercase tracking-wider px-4 py-2 transition-all duration-150 hover:border-hermes-ink active:translate-x-[2px] active:translate-y-[2px] active:shadow-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed text-hermes-ink hover:bg-hermes-ink/5;
   }
 
   .chip-brutal {
-    @apply inline-flex items-center gap-1.5 border border-black/80 px-2 py-0.5 font-mono text-[10px] font-bold uppercase tracking-widest;
+    @apply inline-flex items-center gap-1.5 border border-hermes-ink/80 px-2 py-0.5 font-mono text-[10px] font-bold uppercase tracking-widest;
   }
 
-  /* Status dot with expanding ring */
-  .pulse-dot {
-    position: relative;
-    display: inline-block;
-    width: 0.5rem;
-    height: 0.5rem;
-    border-radius: 9999px;
-  }
-  .pulse-dot::after {
-    content: '';
-    position: absolute;
-    inset: 0;
-    border-radius: 9999px;
-    animation: pulse-ring 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
-  }
-  .pulse-dot-emerald { background-color: #059669; }
-  .pulse-dot-emerald::after { box-shadow: 0 0 0 0 rgba(5, 150, 105, 0.55); animation-name: pulse-ring-emerald; }
-  .pulse-dot-amber { background-color: #d97706; }
-  .pulse-dot-amber::after { box-shadow: 0 0 0 0 rgba(217, 119, 6, 0.55); animation-name: pulse-ring-amber; }
-  .pulse-dot-rose { background-color: #e11d48; }
-  .pulse-dot-rose::after { box-shadow: 0 0 0 0 rgba(225, 29, 72, 0.55); animation-name: pulse-ring-rose; }
-
-  /* Skeleton shimmer — ink on paper */
+  /* Skeleton shimmer — ink on rose paper */
   .shimmer {
     position: relative;
     overflow: hidden;
-    background: rgba(10, 10, 20, 0.08);
+    background: rgba(26, 6, 8, 0.08);
   }
   .shimmer::after {
     content: '';
@@ -99,23 +81,29 @@
     background: linear-gradient(
       90deg,
       transparent,
-      rgba(10, 10, 20, 0.06) 45%,
-      rgba(193, 18, 31, 0.14) 50%,
-      rgba(10, 10, 20, 0.06) 55%,
+      rgba(26, 6, 8, 0.06) 45%,
+      rgba(165, 14, 29, 0.18) 50%,
+      rgba(26, 6, 8, 0.06) 55%,
       transparent
     );
     animation: shimmer-sweep 1.8s ease-in-out infinite;
   }
 
-  /* Fractal noise grain — straight from hermes-agent.nousresearch.com */
+  /* Dark observatory card — raised panel on ink */
+  .card-brutal-dark {
+    @apply bg-hermes-panel border border-hermes-bone/15 shadow-[4px_4px_0_0_rgba(0,0,0,0.55)];
+  }
+
+  /* Fractal noise grain — now a red-tinted film grain */
   .grain-overlay {
     pointer-events: none;
-    opacity: 0.05;
+    opacity: 0.06;
+    mix-blend-mode: multiply;
     background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.72' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
     background-size: 12.8rem;
   }
 
-  /* Marquee ticker */
+  /* Marquee ticker (calm ~55s loop) */
   .marquee-track {
     display: flex;
     width: max-content;
@@ -131,29 +119,21 @@
     animation: feed-slide 0.45s cubic-bezier(0.22, 1, 0.36, 1) both;
   }
 
-  /* Subtle engineering grid (kept for graph canvas backdrop) */
+  /* Subtle engineering grid (graph canvas backdrop) */
   .grid-bg {
     background-image:
-      linear-gradient(rgba(10, 10, 20, 0.07) 1px, transparent 1px),
-      linear-gradient(90deg, rgba(10, 10, 20, 0.07) 1px, transparent 1px);
+      linear-gradient(rgba(26, 6, 8, 0.09) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(26, 6, 8, 0.09) 1px, transparent 1px);
     background-size: 32px 32px;
   }
-}
 
-@keyframes pulse-ring-emerald {
-  0% { box-shadow: 0 0 0 0 rgba(5, 150, 105, 0.5); }
-  70% { box-shadow: 0 0 0 7px rgba(5, 150, 105, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(5, 150, 105, 0); }
-}
-@keyframes pulse-ring-amber {
-  0% { box-shadow: 0 0 0 0 rgba(217, 119, 6, 0.5); }
-  70% { box-shadow: 0 0 0 7px rgba(217, 119, 6, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(217, 119, 6, 0); }
-}
-@keyframes pulse-ring-rose {
-  0% { box-shadow: 0 0 0 0 rgba(225, 29, 72, 0.5); }
-  70% { box-shadow: 0 0 0 7px rgba(225, 29, 72, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(225, 29, 72, 0); }
+  /* Dark engineering grid — bone lines on ink wells */
+  .grid-bg-dark {
+    background-image:
+      linear-gradient(rgba(255, 247, 242, 0.06) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255, 247, 242, 0.06) 1px, transparent 1px);
+    background-size: 32px 32px;
+  }
 }
 
 @keyframes shimmer-sweep {
@@ -170,26 +150,25 @@
   to { transform: translateX(-50%); }
 }
 
-/* Custom scrollbars — ink on paper */
+/* Custom scrollbars — ink on rose paper */
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
 ::-webkit-scrollbar-track {
-  background: rgba(10, 10, 20, 0.04);
+  background: rgba(26, 6, 8, 0.05);
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(10, 10, 20, 0.75);
+  background: rgba(26, 6, 8, 0.75);
   border-radius: 0;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--hermes-red);
+  background: var(--hermes-red-bright);
 }
 
 @media (prefers-reduced-motion: reduce) {
   .marquee-track,
   .shimmer::after,
-  .pulse-dot::after,
   .feed-enter {
     animation: none !important;
   }

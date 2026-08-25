@@ -172,25 +172,30 @@ async def test_nlp_orchestrator_cost_cap(db_session, mock_llm_client):
     assert pending_count == 5
 
 
-async def test_nlp_orchestrator_missing_api_key(db_session):
+async def test_nlp_orchestrator_llm_failure_marks_failed(db_session):
+    """When the LLM client raises (e.g. backend down), the article is
+    marked failed — not silently skipped. The old 'missing key -> skip'
+    path was removed when the HuggingFace fallback landed."""
+    from unittest.mock import AsyncMock
+
     source = Source(name="Test Source", url_or_identifier="http://test.com", type=SourceTypeEnum.rss)
     db_session.add(source)
     await db_session.commit()
     await db_session.refresh(source)
-    
+
     article = Article(
-        title="Article", content="Content", url="http://x.com", source_id=source.id, content_hash="hashx",
+        title="Article", content="Real factual content about the world.", url="http://x.com", source_id=source.id, content_hash="hashx",
         processing_status=ProcessingStatusEnum.processed, nlp_status=NLPStatusEnum.pending
     )
     db_session.add(article)
     await db_session.commit()
-    
+
     mock_llm_client = MagicMock()
-    mock_llm_client.client = None # Simulating missing key
-    
+    mock_llm_client.extract_claims = AsyncMock(side_effect=ValueError("LLM unavailable"))
+
     orchestrator = NLPOrchestrator(llm_client=mock_llm_client)
     summary = await orchestrator.run_nlp_cycle(db_session)
-    
+
     assert summary.total_processed == 1
-    assert summary.status_counts[NLPStatusEnum.skipped.value] == 1
+    assert summary.status_counts[NLPStatusEnum.failed.value] == 1
     assert summary.llm_calls_made == 0

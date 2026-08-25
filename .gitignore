@@ -56,3 +56,4 @@ redis-data/
 # TypeScript build artifacts
 tsconfig.tsbuildinfo
 *.tsbuildinfo
+dataaa/

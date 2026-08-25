@@ -1,94 +1,145 @@
-import React from 'react';
-import { Database, Layers, Cpu, CheckCircle2, Zap } from 'lucide-react';
+import React, { useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
+import { Database, Search, ExternalLink, Zap } from 'lucide-react';
+import { corpusApi, CorpusStats } from '../api/corpus';
+
+/**
+ * VectorTelemetry — REAL corpus stats + working semantic search.
+ * Stats read from /corpus/stats (Postgres truth). The search box embeds the
+ * query and runs pgvector nearest-neighbor over article embeddings.
+ */
 
 export const VectorTelemetry: React.FC = () => {
+  const [q, setQ] = useState('');
+  const [submitted, setSubmitted] = useState('');
+
+  const stats = useQuery({
+    queryKey: ['corpus-stats'],
+    queryFn: () => corpusApi.stats() as Promise<CorpusStats>,
+    refetchInterval: 15000,
+  });
+
+  const results = useQuery({
+    queryKey: ['semantic-search', submitted],
+    queryFn: () => corpusApi.search(submitted, 8),
+    enabled: submitted.length >= 2,
+  });
+
+  const submit = (e: React.FormEvent) => {
+    e.preventDefault();
+    setSubmitted(q.trim());
+  };
+
   return (
-    <div className="card-brutal p-6 flex flex-col gap-6">
+    <div className="card-brutal-dark p-6 flex flex-col gap-6">
       {/* Header */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-black/15">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-hermes-bone/12">
         <div>
           <div className="flex items-center gap-2 mb-1">
             <Database className="w-5 h-5" />
-            <h2 className="text-2xl font-display">
-              PostgreSQL Vector Store
-            </h2>
+            <h2 className="text-2xl font-display">Semantic Corpus Search</h2>
           </div>
-          <p className="text-xs font-mono text-black/60 uppercase tracking-wider">
-            Semantic claims embedding index · vector similarity metrics
+          <p className="text-xs font-mono text-hermes-bone/55 uppercase tracking-wider">
+            pgvector · all-mpnet-base-v2 · {stats.data?.embedded.toLocaleString() ?? '…'} embedded
           </p>
         </div>
-
-        <span className="chip-brutal bg-hermes-ink text-hermes-paper border-black/90 w-fit">
-          pgvector v0.7.0 / Postgres 16
-        </span>
+        {stats.data && (
+          <span className="chip-brutal bg-hermes-panel-deep text-hermes-bone/70 border-hermes-bone/25 w-fit">
+            corpus {stats.data.earliest} → {stats.data.latest}
+          </span>
+        )}
       </div>
 
-      {/* Grid of Vector Metrics */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        <VectorStatCard label="Embedding Model" value="bge-m3 / 1024-d" sub="Dense & Sparse Hybrid" icon={Layers} />
-        <VectorStatCard label="Cosine Search Latency" value="4.2 ms" sub="HNSW Index (m=16, ef=64)" icon={Zap} />
-        <VectorStatCard label="Indexed Claims" value="148,920" sub="+1,240 added today" icon={Database} />
-        <VectorStatCard label="Index Build Status" value="100% Synced" sub="Zero pending re-indexing" icon={CheckCircle2} />
+      {/* Real stats row */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        {[
+          { label: 'Articles', value: stats.data?.total.toLocaleString() ?? '—' },
+          { label: 'Embedded', value: stats.data?.embedded.toLocaleString() ?? '—' },
+          { label: 'Outlets', value: String(stats.data?.domains ?? '—') },
+          {
+            label: 'NLP pending',
+            value:
+              stats.data?.nlp_counts?.pending !== undefined
+                ? stats.data.nlp_counts.pending.toLocaleString()
+                : '—',
+          },
+        ].map((s) => (
+          <div
+            key={s.label}
+            className="border border-hermes-bone/15 bg-hermes-panel p-4 flex flex-col justify-between"
+          >
+            <span className="text-[10px] font-mono uppercase tracking-widest text-hermes-bone/50">
+              {s.label}
+            </span>
+            <div className="text-xl font-display tabular-nums mt-1">{s.value}</div>
+          </div>
+        ))}
       </div>
 
-      {/* Vector Similarity Search Interactive Test Preview */}
-      <div className="border border-black/90 bg-hermes-paper p-5 flex flex-col gap-4">
-        <h3 className="text-xs font-bold text-black font-mono uppercase tracking-widest flex items-center gap-2">
-          <Cpu className="w-4 h-4" /> Nearest-Neighbor Query Simulation
-        </h3>
-
-        <div className="space-y-2 text-xs font-mono">
-          <div className="flex items-center justify-between p-3 bg-white border border-black/40">
-            <span className="text-black/80">Target Vector: [0.042, -0.891, 0.114, ...]</span>
-            <span className="text-emerald-700 font-bold">Metric: Cosine</span>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-2">
-            <SimilarityResult title="Match 1 · Sim 0.962" text="Claim: 'Government shadow program altering atmospheric weather patterns'" distance="0.038" />
-            <SimilarityResult title="Match 2 · Sim 0.894" text="Claim: 'Geoengineering aerosol deployments secretly documented'" distance="0.106" />
-            <SimilarityResult title="Match 3 · Sim 0.821" text="Claim: 'Aviation contrail composition research paper analysis'" distance="0.179" />
-          </div>
+      {/* Semantic search */}
+      <form onSubmit={submit} className="flex items-stretch gap-2">
+        <div className="flex flex-1 items-center border border-hermes-bone/25 bg-hermes-panel-deep px-3">
+          <Search className="w-4 h-4 text-hermes-bone/40 mr-2" />
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder='try "earthquake deaths" or "AI regulation"…'
+            className="flex-1 bg-transparent text-hermes-bone font-mono text-xs py-2.5 outline-none placeholder:text-hermes-bone/35"
+          />
         </div>
-      </div>
-    </div>
-  );
-};
+        <button type="submit" disabled={q.trim().length < 2} className="btn-brutal">
+          <Zap className="w-3.5 h-3.5" /> Embed &amp; Match
+        </button>
+      </form>
 
-const VectorStatCard: React.FC<{
-  label: string;
-  value: string;
-  sub: string;
-  icon: React.ElementType;
-}> = ({ label, value, sub, icon: Icon }) => {
-  return (
-    <div className="border border-black/90 bg-white p-4 flex flex-col justify-between card-brutal-hover">
-      <div className="flex items-center justify-between text-black/50 mb-2">
-        <span className="text-[10px] font-mono uppercase tracking-widest">{label}</span>
-        <Icon className="w-4 h-4 text-hermes-ink" />
-      </div>
-      <div>
-        <div className="text-xl font-display tabular-nums">{value}</div>
-        <div className="text-[11px] font-mono text-black/50 mt-1">{sub}</div>
-      </div>
-    </div>
-  );
-};
+      {/* Results */}
+      {submitted.length >= 2 && (
+        <div className="border border-hermes-bone/20 bg-hermes-panel-deep p-4">
+          <div className="text-[10px] font-mono uppercase tracking-widest text-hermes-bone/45 mb-3">
+            nearest neighbors for “{submitted}” · cosine similarity
+          </div>
 
-const SimilarityResult: React.FC<{
-  title: string;
-  text: string;
-  distance: string;
-}> = ({ title, text, distance }) => {
-  return (
-    <div className="p-3 bg-white border border-black/40 flex flex-col justify-between">
-      <div>
-        <div className="font-bold text-[11px] mb-1 text-hermes-ink">{title}</div>
-        <p className="text-black/70 text-[11px] line-clamp-2">{text}</p>
-      </div>
-      <div className="text-[10px] text-black/50 pt-2 mt-2 border-t border-black/15 flex justify-between font-mono">
-        <span>Dist: {distance}</span>
-        <span className="text-emerald-700 font-bold">Indexed</span>
-      </div>
+          {results.isFetching ? (
+            <div className="space-y-2">
+              {[...Array(4)].map((_, i) => (
+                <div key={i} className="shimmer h-10" />
+              ))}
+            </div>
+          ) : results.isError ? (
+            <p className="font-mono text-xs text-hermes-red-bright">
+              Search failed — embeddings may still be backfilling.
+            </p>
+          ) : (
+            <div className="divide-y divide-hermes-bone/8">
+              {results.data?.items.length === 0 && (
+                <p className="font-mono text-xs text-hermes-bone/50 py-2">
+                  No embeddings yet — run scripts/embed_articles.py first.
+                </p>
+              )}
+              {results.data?.items.map((r) => (
+                <a
+                  key={r.id}
+                  href={r.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="group flex items-center gap-3 py-2"
+                >
+                  <span className="w-12 shrink-0 text-right font-mono text-sm tabular-nums text-hermes-red-bright font-bold">
+                    {(r.score * 100).toFixed(1)}
+                  </span>
+                  <span className="w-28 shrink-0 truncate font-mono text-[10px] uppercase tracking-wider text-hermes-bone/45">
+                    {r.domain?.replace('www.', '')}
+                  </span>
+                  <span className="flex-1 truncate text-xs text-hermes-bone/85 group-hover:text-white">
+                    {r.title}
+                  </span>
+                  <ExternalLink className="w-3 h-3 shrink-0 text-hermes-bone/30 group-hover:text-hermes-red-bright" />
+                </a>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 };

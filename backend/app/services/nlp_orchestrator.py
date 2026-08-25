@@ -11,7 +11,7 @@ from app.models.article import Article, NLPStatusEnum, ProcessingStatusEnum
 from app.models.claim import Claim, ClaimEntity
 from app.services.nlp.embedding_service import EmbeddingService
 from app.services.nlp.entity_extractor import EntityExtractor
-from app.services.nlp.llm_client import AnthropicLLMClient, LLMClient
+from app.services.nlp.llm_client import LLMClient, get_llm_client
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +32,7 @@ class NLPOrchestrator:
     def __init__(self, llm_client: LLMClient | None = None):
         self.settings = get_settings()
         self.max_articles = getattr(self.settings, 'NLP_MAX_ARTICLES_PER_CYCLE', 10)
-        self.llm_client = llm_client or AnthropicLLMClient()
+        self.llm_client = llm_client or get_llm_client()
 
     async def run_nlp_cycle(self, db: AsyncSession) -> NLPSummary:
         summary = NLPSummary()
@@ -52,16 +52,8 @@ class NLPOrchestrator:
             
         logger.info(f"Starting NLP cycle. Found {len(articles)} pending articles (cap: {self.max_articles}).")
         
-        # Check if we should skip due to missing API key
-        # AnthropicLLMClient sets self.client to None if key is missing
-        if getattr(self.llm_client, 'client', True) is None:
-            logger.warning("No LLM API key configured. Skipping NLP extraction for these articles.")
-            for article in articles:
-                article.nlp_status = NLPStatusEnum.skipped
-                await db.commit()
-                summary.status_counts[NLPStatusEnum.skipped.value] += 1
-                summary.total_processed += 1
-            return summary
+        # Note: with the HF fallback there is always a working extractor;
+        # set LLM_BACKEND=none in .env to restore legacy skip behaviour.
 
         logger.info(f"Will make up to {len(articles)} LLM API calls this cycle.")
         

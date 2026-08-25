@@ -6,13 +6,16 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1 import (
     auth,
+    verdicts,
     collection,
+    corpus,
     dashboard,
     evolution,
     health,
     nlp,
     preprocessing,
 )
+from app.api.v1 import verdicts
 from app.core import scheduler
 from app.core.config import get_settings
 from app.core.ops_security import install_rate_limiter, install_security_headers
@@ -56,6 +59,8 @@ def create_app() -> FastAPI:
     api_router.include_router(preprocessing.router, prefix="/preprocessing", tags=["Preprocessing"])
     api_router.include_router(nlp.router, prefix="/nlp", tags=["NLP"])
     api_router.include_router(evolution.router, prefix="/evolution", tags=["Evolution"])
+    api_router.include_router(corpus.router, prefix="/corpus", tags=["Corpus"])
+    api_router.include_router(verdicts.router, prefix="/verdicts", tags=["Verdicts"])
 
     app.include_router(api_router, prefix="/api/v1")
 

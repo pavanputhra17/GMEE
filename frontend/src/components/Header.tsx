@@ -1,7 +1,8 @@
 import React from 'react';
-import { Activity, RefreshCw, Layers, Database, Network, HardDrive, FlaskConical } from 'lucide-react';
+import { Activity, RefreshCw, Layers, Database, Network, HardDrive, FlaskConical, Newspaper, ShieldCheck } from 'lucide-react';
+import { AsciiSpinner } from './AsciiSpinner';
 
-export type TabType = 'overview' | 'graph' | 'vector' | 'cache';
+export type TabType = 'overview' | 'factcheck' | 'graph' | 'vector' | 'cache' | 'corpus';
 
 interface HeaderProps {
   activeTab: TabType;
@@ -16,18 +17,21 @@ interface HeaderProps {
 
 const STATUS_STYLES = {
   ok: {
-    dot: 'pulse-dot pulse-dot-emerald',
-    badge: 'border-black/90 bg-white text-emerald-700',
+    spinMs: 120,
+    spinClass: 'text-emerald-700',
+    badge: 'border-hermes-bone/25 bg-hermes-panel text-emerald-300',
     label: 'Systems Nominal'
   },
   degraded: {
-    dot: 'pulse-dot pulse-dot-amber',
-    badge: 'border-black/90 bg-white text-amber-700',
+    spinMs: 120,
+    spinClass: 'text-amber-700',
+    badge: 'border-hermes-bone/25 bg-hermes-panel text-amber-300',
     label: 'Degraded State'
   },
   error: {
-    dot: 'pulse-dot pulse-dot-rose',
-    badge: 'border-black/90 bg-white text-rose-700',
+    spinMs: 90,
+    spinClass: 'text-hermes-red',
+    badge: 'border-hermes-bone/25 bg-hermes-panel text-hermes-red-bright',
     label: 'Connection Failed'
   }
 } as const;
@@ -53,9 +57,9 @@ export const Header: React.FC<HeaderProps> = ({
 
   return (
     <header className="sticky top-0 z-40 -mx-4 md:-mx-8 lg:-mx-12 mb-8">
-      <div className="bg-hermes-paper/95 backdrop-blur-sm border-b border-black/90">
+      <div className="bg-hermes-ink/95 backdrop-blur-sm border-b border-hermes-bone/15">
         {/* Marquee ticker — Hermes-site signature */}
-        <div className="overflow-hidden border-b border-black/20 bg-hermes-ink text-hermes-paper">
+        <div className="overflow-hidden border-b border-hermes-ink/20 bg-hermes-red text-hermes-bone">
           <div className="marquee-track py-1">
             {[0, 1].map(dup => (
               <div key={dup} className="flex shrink-0 items-center" aria-hidden={dup === 1}>
@@ -74,12 +78,12 @@ export const Header: React.FC<HeaderProps> = ({
 
         <div className="px-4 md:px-8 lg:px-12 pt-5 flex flex-col gap-4">
           {/* Top Banner */}
-          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-5 border-b border-black/15">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-5 border-b border-hermes-bone/12">
             <div className="flex items-center gap-4">
-              <div className={`flex items-center justify-center w-12 h-12 border border-black/90 shadow-[3px_3px_0_0_rgba(10,10,20,1)] ${
-                demoMode ? 'bg-hermes-yellow' : 'bg-hermes-ink'
+              <div className={`flex items-center justify-center w-12 h-12 border border-hermes-bone/30 shadow-[3px_3px_0_0_rgba(26,6,8,1)] ${
+                demoMode ? 'bg-hermes-red-bright' : 'bg-hermes-red'
               }`}>
-                <Activity className={`w-6 h-6 ${demoMode ? 'text-black' : 'text-hermes-yellow'}`} />
+                <Activity className="w-6 h-6 text-hermes-bone" />
               </div>
               <div>
                 <div className="flex items-center gap-3">
@@ -87,15 +91,15 @@ export const Header: React.FC<HeaderProps> = ({
                     GMEE
                   </h1>
                   {demoMode ? (
-                    <span className="chip-brutal bg-hermes-yellow animate-pulse">
+                    <span className="chip-brutal bg-hermes-red-bright text-hermes-bone animate-pulse">
                       <FlaskConical className="w-3 h-3" />
                       Demo Telemetry
                     </span>
                   ) : (
-                    <span className="chip-brutal bg-hermes-ink text-hermes-paper">v1.0 telemetry</span>
+                    <span className="chip-brutal bg-hermes-red text-hermes-bone">v1.0 telemetry</span>
                   )}
                 </div>
-                <p className="text-xs font-mono uppercase tracking-widest text-black/60 mt-1">
+                <p className="text-xs font-mono uppercase tracking-widest text-hermes-bone/60 mt-1">
                   Global Misinformation Evolution Engine
                 </p>
               </div>
@@ -104,17 +108,17 @@ export const Header: React.FC<HeaderProps> = ({
             {/* Status + Controls */}
             <div className="flex flex-wrap items-center gap-3">
               <div className={`flex items-center gap-2 px-3 py-1.5 border text-xs font-semibold tracking-wide uppercase font-mono ${statusStyle.badge}`}>
-                <span className={statusStyle.dot} />
+                <AsciiSpinner advanceMs={statusStyle.spinMs} className={statusStyle.spinClass} label={statusStyle.label} />
                 {statusStyle.label}
-                {demoMode && <span className="ml-1 text-black/50 normal-case">(simulated)</span>}
+                {demoMode && <span className="ml-1 text-hermes-ink/50 normal-case">(simulated)</span>}
               </div>
 
               {/* Polling interval dropdown */}
-              <div className="flex items-center border border-black/90 bg-white p-0.5 text-xs">
+              <div className="flex items-center border border-hermes-bone/25 bg-hermes-panel p-0.5 text-xs">
                 <select
                   value={refetchInterval}
                   onChange={(e) => setRefetchInterval(Number(e.target.value))}
-                  className="bg-transparent text-black border-none outline-none py-1 pl-2 pr-1 font-mono cursor-pointer"
+                  className="bg-transparent text-hermes-bone border-none outline-none py-1 pl-2 pr-1 font-mono cursor-pointer"
                 >
                   <option value={2000}>2s live</option>
                   <option value={5000}>5s standard</option>
@@ -141,6 +145,8 @@ export const Header: React.FC<HeaderProps> = ({
             <TabButton id="graph" label="Neo4j Graph Engine" icon={Network} badge="7687" activeTab={activeTab} setActiveTab={setActiveTab} />
             <TabButton id="vector" label="Postgres Vector" icon={Database} badge="pgvector" activeTab={activeTab} setActiveTab={setActiveTab} />
             <TabButton id="cache" label="Redis Queue" icon={HardDrive} badge="6379" activeTab={activeTab} setActiveTab={setActiveTab} />
+            <TabButton id="factcheck" label="FactCheck" icon={ShieldCheck} badge="VERDICTS" activeTab={activeTab} setActiveTab={setActiveTab} />
+            <TabButton id="corpus" label="Corpus" icon={Newspaper} badge="6.4k articles" activeTab={activeTab} setActiveTab={setActiveTab} />
           </nav>
         </div>
       </div>
@@ -163,15 +169,15 @@ const TabButton: React.FC<{
       onClick={() => setActiveTab(id)}
       className={`flex items-center gap-2.5 px-4 py-2.5 text-xs md:text-sm font-mono font-bold uppercase tracking-wide transition-colors whitespace-nowrap cursor-pointer border-b-2 -mb-px ${
         isActive
-          ? 'border-hermes-red text-hermes-ink bg-white'
-          : 'border-transparent text-black/50 hover:text-black'
+          ? 'border-hermes-red text-hermes-red bg-hermes-panel'
+          : 'border-transparent text-hermes-bone/50 hover:text-hermes-bone'
       }`}
     >
       <Icon className="w-4 h-4" />
       <span>{label}</span>
       {badge && (
         <span className={`px-1.5 py-0.5 text-[10px] border ${
-          isActive ? 'bg-hermes-ink text-hermes-paper border-hermes-red' : 'bg-black/5 text-black/50 border-black/20'
+          isActive ? 'bg-hermes-red text-hermes-bone border-hermes-red' : 'bg-hermes-bone/5 text-hermes-bone/50 border-hermes-bone/20'
         }`}>
           {badge}
         </span>
