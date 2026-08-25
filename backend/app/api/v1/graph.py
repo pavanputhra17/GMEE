@@ -225,3 +225,94 @@ async def timeline_clusters(limit: int = 60):
         )
 
     return {"clusters": clusters, "count": len(clusters)}
+
+
+@router.get("/scoops")
+async def scoop_races(limit: int = 12):
+    """Who broke each story first? For every linked cluster: outlets ranked
+    by publish time with exact lag behind the winner."""
+    driver = await neo4j_client.get_driver()
+
+    async def _run(tx):
+        res = await tx.run(
+            """
+            MATCH (a:Article)-[:SIMILAR]-(b:Article)
+            WITH a, count(b) AS deg WHERE deg >= 2
+            MATCH (m:Article)-[r:SIMILAR]-(a)
+            WHERE m.publishedAt IS NOT NULL
+            WITH a, deg, collect({id: m.id, title: m.title,
+                 domain: m.domain, url: m.url,
+                 publishedAt: m.publishedAt}) AS members
+            RETURN a.id AS id, a.title AS title, a.domain AS domain,
+                   a.url AS url, a.publishedAt AS hub_published,
+                   deg, members
+            ORDER BY hub_published DESC LIMIT $lim * 3
+            """,
+            lim=limit,
+        )
+        return await res.data()
+
+    async with driver.session() as ses:
+        rows = await ses.execute_read(_run)
+
+    from datetime import datetime
+
+    def ts(v):
+        if not v:
+            return None
+        if isinstance(v, datetime):
+            return v
+        try:
+            return datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+        except Exception:
+            return None
+
+    races = []
+    for r in rows:
+        entries = [
+            {"id": r["id"], "title": _clean_text(r.get("title"), 140) or "",
+             "domain": _clean_text(r.get("domain"), 80),
+             "url": r.get("url"), "published": ts(r.get("hub_published"))}
+        ]
+        for m in r.get("members") or []:
+            t = ts(m.get("publishedAt"))
+            if t:
+                entries.append({
+                    "id": m["id"],
+                    "title": _clean_text(m.get("title"), 140) or "",
+                    "domain": _clean_text(m.get("domain"), 80),
+                    "url": m.get("url"), "published": t,
+                })
+        # unique by id, drop undated
+        seen = set()
+        uniq = []
+        for e in entries:
+            if e["id"] in seen or e["published"] is None:
+                continue
+            seen.add(e["id"])
+            uniq.append(e)
+        if len(uniq) < 2:
+            continue
+        uniq.sort(key=lambda x: x["published"])
+        winner = uniq[0]
+        lag_total = (uniq[-1]["published"] - winner["published"]).total_seconds()
+        racers = []
+        for i, e in enumerate(uniq[:6]):
+            lag_s = (e["published"] - winner["published"]).total_seconds()
+            racers.append({
+                **e,
+                "published": e["published"].isoformat(),
+                "lag_seconds": int(lag_s),
+                "position": i,
+            })
+        races.append({
+            "story": _clean_text(winner["title"], 120) or "",
+            "winner_domain": winner["domain"],
+            "racers": racers,
+            "field_size": len(uniq),
+            "lag_spread_seconds": int(lag_total),
+        })
+        if len(races) >= limit:
+            break
+
+    return {"races": races, "count": len(races)}

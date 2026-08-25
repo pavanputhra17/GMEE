@@ -1,8 +1,8 @@
 import React from 'react';
-import { Activity, RefreshCw, Layers, Database, Network, HardDrive, FlaskConical, Newspaper, ShieldCheck, Share2, Orbit } from 'lucide-react';
+import { Activity, RefreshCw, Layers, Database, Network, HardDrive, FlaskConical, Newspaper, ShieldCheck, Share2, Orbit, Sparkles } from 'lucide-react';
 import { AsciiSpinner } from './AsciiSpinner';
 
-export type TabType = 'overview' | 'factcheck' | 'fullgraph' | 'timeline' | 'graph' | 'vector' | 'cache' | 'corpus';
+export type TabType = 'overview' | 'factcheck' | 'fullgraph' | 'timeline' | 'masala' | 'graph' | 'vector' | 'cache' | 'corpus';
 
 interface HeaderProps {
   activeTab: TabType;
@@ -147,6 +147,7 @@ export const Header: React.FC<HeaderProps> = ({
             <TabButton id="cache" label="Redis Queue" icon={HardDrive} badge="6379" activeTab={activeTab} setActiveTab={setActiveTab} />
             <TabButton id="fullgraph" label="Graph" icon={Share2} badge="6.4k nodes" activeTab={activeTab} setActiveTab={setActiveTab} />
             <TabButton id="timeline" label="Timeline" icon={Orbit} badge="3D" activeTab={activeTab} setActiveTab={setActiveTab} />
+            <TabButton id="masala" label="Masala Lab" icon={Sparkles} badge="NEW" activeTab={activeTab} setActiveTab={setActiveTab} />
             <TabButton id="factcheck" label="FactCheck" icon={ShieldCheck} badge="VERDICTS" activeTab={activeTab} setActiveTab={setActiveTab} />
             <TabButton id="corpus" label="Corpus" icon={Newspaper} badge="6.4k articles" activeTab={activeTab} setActiveTab={setActiveTab} />
           </nav>

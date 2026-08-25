@@ -168,3 +168,158 @@ async def verdict_detail(claim_id: str):
     if m.get("published_at"):
         m["published_at"] = m["published_at"].isoformat()
     return m
+
+
+# ------------------------------------------------------- mutation chains
+
+_MUT_CACHE: dict[str, tuple[float, object]] = {}
+_MUT_TTL = 600.0  # seconds
+
+
+@router.get("/game/mutations")
+async def mutation_chains(min_versions: int = 3, limit: int = 8):
+    """Claim mutation chains: same assertion, wording drifting outlet to
+    outlet. Union-find over pgvector near-duplicate pairs (sim >= 0.90)."""
+    import time as _time
+
+    now = _time.time()
+    cached = _MUT_CACHE.get("chains")
+    if cached and now - cached[0] < _MUT_TTL:
+        return {"chains": cached[1]}
+
+    async with async_session_maker() as db:
+        pairs = (
+            await db.execute(
+                text(
+                    """
+                    SELECT x.id::text AS src, y.id::text AS dst
+                    FROM claims x
+                    JOIN claims y
+                      ON x.id < y.id AND y.embedding IS NOT NULL
+                     AND (1 - (x.embedding <=> y.embedding)) >= 0.84
+                    JOIN articles ax ON ax.id = x.article_id
+                    JOIN articles ay ON ay.id = y.article_id
+                    WHERE x.embedding IS NOT NULL
+                      AND ax.domain <> ay.domain
+                    ORDER BY (1 - (x.embedding <=> y.embedding)) DESC
+                    LIMIT 4000
+                    """
+                )
+            )
+        ).all()
+
+    parent: dict[str, str] = {}
+
+    def find(a: str) -> str:
+        while parent.get(a, a) != a:
+            parent[a] = parent.get(parent[a], parent[a])
+            a = parent[a]
+        return a
+
+    ids = set()
+    edges = []
+    for s_, d_ in pairs:
+        ids.add(s_)
+        ids.add(d_)
+        edges.append((s_, d_))
+    for i in ids:
+        parent.setdefault(i, i)
+    for s_, d_ in edges:
+        ra, rb = find(s_), find(d_)
+        if ra != rb:
+            parent[ra] = rb
+
+    groups: dict[str, list[str]] = {}
+    for i in ids:
+        groups.setdefault(find(i), []).append(i)
+
+    big = [g for g in groups.values() if len(g) >= min_versions]
+    big.sort(key=len, reverse=True)
+    big = big[:limit]
+
+    chains = []
+    async with async_session_maker() as db:
+        for g in big:
+            rows = (
+                await db.execute(
+                    text(
+                        """
+                        SELECT c.id::text AS id, c.claim_text AS text,
+                               a.domain AS domain, a.published_at AS pub,
+                               a.title AS article_title
+                        FROM claims c JOIN articles a ON a.id = c.article_id
+                        WHERE c.id::text = ANY(:ids)
+                        ORDER BY a.published_at ASC NULLS LAST
+                        """
+                    ),
+                    {"ids": g},
+                )
+            ).all()
+            versions = [
+                {
+                    "id": r[0],
+                    "text": _v_clean(r[1], 220) or "",
+                    "domain": _v_clean(r[2], 80),
+                    "published_at": r[3].isoformat() if r[3] else None,
+                    "article_title": _v_clean(r[4], 120),
+                }
+                for r in rows
+            ]
+            domains = {vv["domain"] for vv in versions}
+            # a REAL mutation spans outlets; same-outlet boilerplate isn't one
+            if len(versions) >= min_versions and len(domains) >= 2:
+                chains.append({
+                    "chain_id": g[0][:8],
+                    "size": len(versions),
+                    "distinct_outlets": len(domains),
+                    "versions": versions,
+                })
+    chains.sort(key=lambda c: (-c["distinct_outlets"], -c["size"]))
+    result = chains[:limit]
+    _MUT_CACHE["chains"] = (now, result)
+    return {"chains": result}
+
+
+def _v_clean(val, limit: int) -> str | None:
+    import html as h
+    import re as re_
+    if not val:
+        return None
+    s = h.unescape(re_.compile(r"<[^>]*>").sub(" ", str(val)))
+    s = re_.sub(r"\s+", " ", s).strip()
+    return s[:limit] or None
+
+
+# ------------------------------------------------------- arcade
+
+
+@router.get("/game/claim")
+async def game_claim():
+    """Random verdicted claim for Fact-or-Fake. Answer NOT included —
+    client reveals via /verdicts/{id} so peeking requires effort :)"""
+    import random
+
+    async with async_session_maker() as db:
+        row = (
+            await db.execute(
+                text(
+                    """
+                    SELECT c.id::text AS id, c.claim_text AS text,
+                           a.domain AS domain, a.published_at AS pub
+                    FROM claims c JOIN articles a ON a.id = c.article_id
+                    WHERE c.verdict IS NOT NULL
+                      AND LENGTH(c.claim_text) BETWEEN 40 AND 240
+                    ORDER BY random()
+                    LIMIT 1
+                    """
+                )
+            )
+        ).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="no verdicted claims yet")
+    return {
+        "id": row[0],
+        "text": _v_clean(row[1], 260) or "",
+        "domain": _v_clean(row[2], 80),
+        "published_at": row[3].isoformat() if row[3] else None,
+    }
