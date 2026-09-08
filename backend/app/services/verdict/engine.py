@@ -46,6 +46,7 @@ import logging
 import math
 import re
 from dataclasses import dataclass, field
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -105,7 +106,7 @@ class Signal:
     name: str
     value: float          # normalised 0..1 where 1 pushes toward SUPPORTED
     weight: float
-    detail: dict = field(default_factory=dict)
+    detail: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -113,7 +114,7 @@ class VerdictResult:
     probability: float
     band: str
     rationale: str
-    evidence: dict
+    evidence: dict[str, Any]
 
 
 class VerdictEngine:
@@ -150,7 +151,7 @@ class VerdictEngine:
     # -------------------------------------------------- entity signal
 
     @staticmethod
-    def entity_signal(entities: list[dict]) -> Signal:
+    def entity_signal(entities: list[dict[str, Any]]) -> Signal:
         strong_types = {"PERSON", "ORG", "GPE", "LOC", "DATE", "CARDINAL", "MONEY", "QUANTITY", "TIME", "PERCENT"}
         strong = sum(1 for e in entities if e.get("entity_type") in strong_types)
         total = len(entities)
@@ -173,7 +174,7 @@ class VerdictEngine:
 
     @staticmethod
     def corroboration_signal(
-        neighbor_claims: list[dict],
+        neighbor_claims: list[dict[str, Any]],
         own_domain: str | None,
     ) -> tuple[Signal, Signal]:
         """Returns (corroboration, contradiction) signals.
@@ -226,7 +227,7 @@ class VerdictEngine:
 
     @staticmethod
     def track_record_signal(
-        outlet_stats: dict | None,
+        outlet_stats: dict[str, Any] | None,
     ) -> Signal:
         """Bayesian-smoothed historical support rate for the source outlet."""
         if not outlet_stats:
@@ -302,10 +303,9 @@ _nli_tok = None
 _nli_mdl = None
 
 
-def _load_nli():
+def _load_nli() -> tuple[Any, Any]:
     global _nli_tok, _nli_mdl
     if _nli_mdl is None:
-        import torch
         from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 
         logger.info("Loading NLI model google/flan-t5-base …")

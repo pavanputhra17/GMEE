@@ -55,7 +55,7 @@ async def get_clusters(db: AsyncSession = Depends(get_db_session)) -> Any:
         return {"clusters": []}
         
     # Group assignments by topic_id
-    clusters = {}
+    clusters: dict[int, dict[str, Any]] = {}
     for a in run.assignments:
         if a.topic_id not in clusters:
             clusters[a.topic_id] = {

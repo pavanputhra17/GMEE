@@ -7,15 +7,18 @@ from app.core.config import get_settings
 from app.core.leader_lock import LeaderLock
 from app.db.postgres import async_session_maker
 from app.db.redis_client import redis_client
-from app.services.collection_orchestrator import orchestrator
+from app.services.collection_orchestrator import (
+    SourceCollectionSummary,
+    orchestrator,
+)
 
 logger = logging.getLogger(__name__)
 
 scheduler = AsyncIOScheduler()
 
 # We need to store the latest run summary for the /status endpoint since we aren't using a DB table
-latest_collection_summary = []
-last_run_time = None
+latest_collection_summary: list[SourceCollectionSummary] = []
+last_run_time: datetime | None = None
 
 _leader: LeaderLock | None = None
 
@@ -27,7 +30,7 @@ def _get_leader() -> LeaderLock:
     return _leader
 
 
-async def scheduled_collection_job():
+async def scheduled_collection_job() -> None:
     global latest_collection_summary
     global last_run_time
 

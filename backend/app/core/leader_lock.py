@@ -16,6 +16,7 @@ today's behaviour) rather than none.
 
 import logging
 import uuid
+from typing import Any
 
 from redis.asyncio import Redis
 
@@ -23,14 +24,15 @@ logger = logging.getLogger(__name__)
 
 
 class LeaderLock:
-    def __init__(self, redis_client, namespace: str = "gmee") -> None:
-        # ``redis_client`` is the app's redis_client wrapper (has get_client())
-        self._wrapper = redis_client
+    def __init__(self, redis_wrapper: Any, namespace: str = "gmee") -> None:
+        # ``redis_wrapper`` is the app's redis_client wrapper (has get_client())
+        self._wrapper = redis_wrapper
         self.namespace = namespace
         self.instance_id = uuid.uuid4().hex[:12]
 
     async def _client(self) -> Redis:
-        return await self._wrapper.get_client()
+        client: Redis = await self._wrapper.get_client()
+        return client
 
     async def try_acquire(self, job: str, ttl_seconds: int) -> bool:
         """Attempt to become the leader for ``job``. True when acquired."""
@@ -49,7 +51,8 @@ class LeaderLock:
         try:
             client = await self._client()
             current = await client.get(key)
-            if current and current.decode() == self.instance_id:
+            token = current.decode() if isinstance(current, bytes) else current
+            if current and token == self.instance_id:
                 await client.delete(key)
         except Exception as exc:
             logger.debug("leader lock release skipped: %s", exc)

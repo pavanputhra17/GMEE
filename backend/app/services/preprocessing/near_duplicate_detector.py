@@ -36,7 +36,7 @@ class NearDuplicateDetector:
             m.update(shingle.encode('utf8'))
         return m
 
-    async def initialize(self):
+    async def initialize(self) -> None:
         """Loads articles from the bounded window into the LSH index."""
         window_days = getattr(self.settings, 'NEAR_DUP_WINDOW_DAYS', 14)
         cutoff_date = datetime.now(UTC) - timedelta(days=window_days)
@@ -89,16 +89,8 @@ class NearDuplicateDetector:
                 match = self.article_map.get(key)
                 if not match:
                     continue
-                # If the matched article is already a duplicate of something else, follow it to its root
-                root_id = match.canonical_article_id or match.id
-                
-                # We need the actual root article to compare dates.
-                # However, all articles in article_map should be roots or pointing to a root.
-                # To keep it simple, just consider all matches and their collected_at dates.
-                # If a match points to a root, we technically should check the root's date, 
-                # but since it's already a duplicate, its root is definitely older.
-                # Let's just track the root_id that has the earliest collected_at.
-                
+                # If the matched article is already a duplicate of something else,
+                # its canonical root is definitely older than this match.
                 if not earliest_article or match.collected_at < earliest_article.collected_at:
                     earliest_article = match
             

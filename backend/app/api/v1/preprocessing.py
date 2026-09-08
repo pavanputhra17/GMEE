@@ -1,4 +1,5 @@
 import logging
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, select
@@ -19,7 +20,7 @@ prep_orchestrator = PreprocessingOrchestrator()
 async def trigger_preprocessing(
     db: AsyncSession = Depends(get_db_session),
     current_user: User = Depends(require_role(RoleEnum.admin))
-):
+) -> dict[str, Any]:
     """
     Manually trigger a preprocessing cycle (admin only).
     """
@@ -35,7 +36,7 @@ async def trigger_preprocessing(
             }
         }
     except Exception as e:
-        logger.exception(f"Preprocessing trigger failed: {e}")
+        logger.exception("Preprocessing trigger failed")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Preprocessing cycle failed: {e!s}"
@@ -46,14 +47,14 @@ async def trigger_preprocessing(
 async def get_preprocessing_status(
     db: AsyncSession = Depends(get_db_session),
     current_user: User = Depends(get_current_user)
-):
+) -> dict[str, Any]:
     """
     Get preprocessing statistics.
     """
     # Count articles by processing_status
     stmt = select(Article.processing_status, func.count(Article.id)).group_by(Article.processing_status)
     result = await db.execute(stmt)
-    counts = dict(result.all())
+    counts: dict[ProcessingStatusEnum, int] = {row[0]: int(row[1]) for row in result.all()}
 
     # Ensure all statuses are present in the response
     status_counts = {

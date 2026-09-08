@@ -206,6 +206,10 @@ const Arcade: React.FC = () => {
     try {
       const c = await apiClient.get('/verdicts/game/claim') as { id: string; text: string; domain: string | null };
       setClaim(c);
+    } catch {
+      // Backend unreachable / no verdicted claims yet — leave claim cleared;
+      // the arcade renders its empty state instead of throwing.
+      setClaim(null);
     } finally {
       setLoading(false);
     }
@@ -216,16 +220,21 @@ const Arcade: React.FC = () => {
   const guess = async (g: 'SUPPORTED' | 'DISPUTED') => {
     if (!claim || revealed) return;
     setVerdict(g);
-    const d = await apiClient.get(`/verdicts/${claim.id}`) as { verdict: string; probability: number };
-    setRevealed({ band: d.verdict, prob: d.probability });
-    const engineSaysBad = d.verdict === 'DISPUTED';
-    const correct = (g === 'DISPUTED') === engineSaysBad;
-    if (correct) {
-      sound.win();
-      setScore((s) => ({ right: s.right + 1, wrong: s.wrong, streak: s.streak + 1 }));
-    } else {
-      sound.lose();
-      setScore((s) => ({ right: s.right, wrong: s.wrong + 1, streak: 0 }));
+    try {
+      const d = await apiClient.get(`/verdicts/${claim.id}`) as { verdict: string; probability: number };
+      setRevealed({ band: d.verdict, prob: d.probability });
+      const engineSaysBad = d.verdict === 'DISPUTED';
+      const correct = (g === 'DISPUTED') === engineSaysBad;
+      if (correct) {
+        sound.win();
+        setScore((s) => ({ right: s.right + 1, wrong: s.wrong, streak: s.streak + 1 }));
+      } else {
+        sound.lose();
+        setScore((s) => ({ right: s.right, wrong: s.wrong + 1, streak: 0 }));
+      }
+    } catch {
+      // Reveal failed — treat as unresolved round rather than crashing the UI.
+      setRevealed(null);
     }
   };
 

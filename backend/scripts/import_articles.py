@@ -1,3 +1,5 @@
+# mypy: disallow-untyped-defs=False, disallow-incomplete-defs=False, disallow-any-generics=False
+
 """Import the friend-exported articles CSV into GMEE Postgres.
 
 Honors the backend's own conventions:
@@ -23,14 +25,15 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from sqlalchemy import text  # noqa: E402
-from app.db.postgres import async_session_maker as AsyncSessionLocal  # noqa: E402
+from sqlalchemy import CursorResult, text
+
+from app.db.postgres import async_session_maker as AsyncSessionLocal
 
 
 def content_hash(title: str, content: str | None) -> str:
     t = (title or "").strip().lower()
     c = (content or "").strip().lower()
-    return hashlib.sha256(f"{t}:{c}".encode("utf-8")).hexdigest()
+    return hashlib.sha256(f"{t}:{c}".encode()).hexdigest()
 
 
 def parse_ts(v: str | None) -> datetime | None:
@@ -42,11 +45,14 @@ def parse_ts(v: str | None) -> datetime | None:
         return None
 
 
-async def main(csv_path: str) -> None:
-    rows: list[dict] = []
+def _read_csv(csv_path: str) -> list[dict]:
+    """Blocking read executed via asyncio.to_thread to avoid stalling the loop."""
     with open(csv_path, newline="", encoding="utf-8") as f:
-        for row in csv.DictReader(f):
-            rows.append(row)
+        return list(csv.DictReader(f))
+
+
+async def main(csv_path: str) -> None:
+    rows = await asyncio.to_thread(_read_csv, csv_path)
     print(f"CSV rows: {len(rows)}")
 
     # ---- 1. sources ----
@@ -136,10 +142,11 @@ async def main(csv_path: str) -> None:
                 """
             )
             res = await db.execute(stmt, params)
-            inserted += res.rowcount or 0
-            skipped += len(params) - (res.rowcount or 0)
+            rc = res.rowcount if isinstance(res, CursorResult) else 0
+            inserted += rc
+            skipped += len(params) - rc
             await db.commit()
-            print(f"  batch {off // BATCH + 1}: +{res.rowcount} (cumulative {inserted})")
+            print(f"  batch {off // BATCH + 1}: +{rc} (cumulative {inserted})")
 
         print(f"\nDONE. inserted={inserted} skipped(existing/invalid)={skipped}")
 

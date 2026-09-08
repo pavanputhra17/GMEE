@@ -118,7 +118,7 @@ class NLPOrchestrator:
                 
             except Exception as e:
                 article_id = article.id
-                logger.exception(f"Error during NLP processing for article {article_id}: {e}")
+                logger.exception(f"Error during NLP processing for article {article_id}")
                 
                 # Re-fetch and mark as failed
                 await db.rollback()
@@ -145,7 +145,7 @@ class NLPOrchestrator:
             evo_orch = EvolutionOrchestrator()
             evo_summary = await evo_orch.run_evolution_cycle(db)
             logger.info(f"Auto-triggered evolution cycle result: {evo_summary}")
-        except Exception as e:
-            logger.exception(f"Error during auto-triggered evolution cycle: {e}")
+        except Exception:
+            logger.exception("Error during auto-triggered evolution cycle")
 
         return summary

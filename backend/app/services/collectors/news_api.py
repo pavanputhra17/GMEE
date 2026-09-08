@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 class NewsAPICollector(BaseCollector):
-    def __init__(self):
+    def __init__(self) -> None:
         self.settings = get_settings()
 
     async def collect(self, source: Source) -> list[RawArticle]:

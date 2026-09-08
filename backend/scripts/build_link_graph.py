@@ -1,3 +1,5 @@
+# mypy: disallow-untyped-defs=False, disallow-incomplete-defs=False, disallow-any-generics=False
+
 """Build the GMEE link graph from imported articles — no LLM needed.
 
 Pipeline:
@@ -14,25 +16,25 @@ Usage (backend/, project .env loaded):
 import asyncio
 import os
 import sys
-import uuid
 from collections import defaultdict
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import numpy as np  # noqa: E402
-from neo4j import GraphDatabase  # noqa: E402
-from sqlalchemy import text  # noqa: E402
+import numpy as np
+from neo4j import GraphDatabase
+from sqlalchemy import text
 
-from app.db.postgres import async_session_maker  # noqa: E402
+from app.db.postgres import async_session_maker
 
 SIM_THRESHOLD = 0.82
 TOP_K = 3
 EMBED_BATCH = 64
 
 
-async def load_articles():
+async def load_articles() -> list[dict[str, Any]]:
     async with async_session_maker() as db:
         res = await db.execute(
             text(
@@ -127,7 +129,7 @@ def write_neo4j(articles: list[dict], sim_edges, dupe_edges):
         ).consume()
 
         # articles
-        t0 = datetime.now()
+        t0 = datetime.now(UTC)
         B = 500
         for off in range(0, len(articles), B):
             chunk = [
@@ -136,7 +138,7 @@ def write_neo4j(articles: list[dict], sim_edges, dupe_edges):
                     "title": a["title"][:300],
                     "url": a["url"],
                     "domain": a["domain"],
-                    "published_at": datetime.fromtimestamp(a["pub_ts"]).isoformat()
+                    "published_at": datetime.fromtimestamp(a["pub_ts"], tz=UTC).isoformat()
                     if a["pub_ts"]
                     else None,
                     "word_count": int(a["wc"]),
@@ -198,7 +200,10 @@ def write_neo4j(articles: list[dict], sim_edges, dupe_edges):
             ("similar", "MATCH ()-[e:SIMILAR]->() RETURN count(e)"),
             ("dupes", "MATCH ()-[e:DUPLICATE_OF]->() RETURN count(e)"),
         ]:
-            stats[label] = ses.run(q).single()[0]
+            rec = ses.run(q).single()
+            if rec is None:
+                continue
+            stats[label] = rec[0]
         print("\n=== NEO4J GRAPH ===")
         for k, v in stats.items():
             print(f"{k}: {v}")
@@ -231,10 +236,10 @@ def write_neo4j(articles: list[dict], sim_edges, dupe_edges):
             print(f"  ({rec['score']}) {rec['x'][:60]}  <->  {rec['y'][:60]}")
 
     driver.close()
-    print(f"\ngraph build finished in {(datetime.now() - t0).total_seconds():.1f}s")
+    print(f"\ngraph build finished in {(datetime.now(UTC) - t0).total_seconds():.1f}s")
 
 
-async def main():
+async def main() -> None:
     articles = await load_articles()
     bodies = [
         f"{a['title']}. {a['body']}"[:2000] for a in articles

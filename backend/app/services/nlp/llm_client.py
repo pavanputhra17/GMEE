@@ -2,6 +2,7 @@ import json
 import logging
 import os
 from abc import ABC, abstractmethod
+from typing import Any
 
 from anthropic import AsyncAnthropic
 from pydantic import BaseModel, ValidationError
@@ -25,11 +26,11 @@ class LLMClient(ABC):
 
 
 class AnthropicLLMClient(LLMClient):
-    def __init__(self):
+    def __init__(self) -> None:
         self.settings = get_settings()
         # Initialize only if API key is provided
         if self.settings.ANTHROPIC_API_KEY:
-            self.client = AsyncAnthropic(api_key=self.settings.ANTHROPIC_API_KEY)
+            self.client: AsyncAnthropic | None = AsyncAnthropic(api_key=self.settings.ANTHROPIC_API_KEY)
         else:
             self.client = None
 
@@ -65,14 +66,15 @@ Text to analyze:
 """
 
         try:
-            response = await self.client.messages.create(
-                model=self.model,
-                max_tokens=1024,
-                temperature=0.0,
-                messages=[
+            params: dict[str, Any] = {
+                "model": self.model,
+                "max_tokens": 1024,
+                "temperature": 0.0,
+                "messages": [
                     {"role": "user", "content": prompt}
-                ]
-            )
+                ],
+            }
+            response = await self.client.messages.create(**params)
 
             raw_text = response.content[0].text.strip()
 
@@ -80,14 +82,14 @@ Text to analyze:
             try:
                 data = json.loads(raw_text)
                 if not isinstance(data, list):
-                    raise ValueError("Expected a JSON array")
+                    raise TypeError("Expected a JSON array")
 
                 claims = []
                 for item in data:
                     claims.append(ExtractedClaim.model_validate(item))
                 return claims
 
-            except (json.JSONDecodeError, ValidationError, ValueError) as parse_err:
+            except (json.JSONDecodeError, ValidationError, ValueError, TypeError) as parse_err:
                 logger.error(f"Failed to parse LLM response. Error: {parse_err}. Raw response (truncated): {raw_text[:200]}")
                 raise ValueError(f"Invalid LLM response format: {parse_err}")
 
@@ -107,10 +109,10 @@ class HuggingFaceLLMClient(LLMClient):
 
     MODEL_ID = os.environ.get("HF_LLM_MODEL", "google/flan-t5-base")
 
-    def __init__(self):
-        self._pipe = None
+    def __init__(self) -> None:
+        self._pipe: tuple[Any, Any, str] | None = None
 
-    def _load(self):
+    def _load(self) -> None:
         if self._pipe is None:
             import torch
             from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
@@ -166,10 +168,12 @@ class HuggingFaceLLMClient(LLMClient):
             for s in sentences[:8]  # cap per-article cost on CPU
         ]
 
-        def run_pipeline():
+        def run_pipeline() -> list[dict[str, str]]:
             import torch
 
-            tok, mdl, device = self._pipe
+            pipe = self._pipe
+            assert pipe is not None
+            tok, mdl, device = pipe
             inputs = tok(prompts, return_tensors="pt", padding=True, truncation=True, max_length=512)
             inputs = {k: v.to(device) for k, v in inputs.items()}
             with torch.no_grad():

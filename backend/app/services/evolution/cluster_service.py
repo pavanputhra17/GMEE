@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 
 class ClusterService:
-    def __init__(self):
+    def __init__(self) -> None:
         self.settings = get_settings()
 
     async def run_clustering(self, db: AsyncSession, claims: Sequence[Claim]) -> ClaimClusterRun:

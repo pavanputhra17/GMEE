@@ -1,4 +1,5 @@
 #test comment
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import APIRouter, FastAPI
@@ -6,7 +7,6 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1 import (
     auth,
-    verdicts,
     collection,
     corpus,
     dashboard,
@@ -15,6 +15,7 @@ from app.api.v1 import (
     health,
     nlp,
     preprocessing,
+    verdicts,
 )
 from app.core import scheduler
 from app.core.config import get_settings
@@ -25,7 +26,7 @@ from app.services.seeder import seed_sources
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Load heavy NLP models on startup
     EntityExtractor.load_model()
     EmbeddingService.load_model()

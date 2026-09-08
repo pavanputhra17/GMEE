@@ -1,9 +1,9 @@
 import hashlib
 import logging
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import CursorResult, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -28,7 +28,7 @@ class SourceCollectionSummary:
 
 
 class CollectionOrchestrator:
-    def __init__(self):
+    def __init__(self) -> None:
         self.collectors: dict[SourceTypeEnum, BaseCollector] = {
             SourceTypeEnum.rss: RSSCollector(),
             SourceTypeEnum.news_api: NewsAPICollector(),
@@ -82,20 +82,26 @@ class CollectionOrchestrator:
                 inserted_count = 0
                 if articles_to_insert:
                     # 3. Bulk insert with ON CONFLICT DO NOTHING on url
-                    if db.bind.dialect.name == "sqlite":
-                        stmt = sqlite_insert(Article).values(articles_to_insert)
-                    else:
-                        stmt = pg_insert(Article).values(articles_to_insert)
                     # We deduplicate primarily by url.
-                    stmt = stmt.on_conflict_do_nothing(index_elements=['url'])
-                    
-                    # Execute and get number of rows inserted
-                    # Since it's a bulk operation that might ignore rows, we can check rowcount
-                    exec_result = await db.execute(stmt)
-                    inserted_count = exec_result.rowcount
+                    if db.bind.dialect.name == "sqlite":
+                        stmt_sq = sqlite_insert(Article).values(articles_to_insert)
+                        res = await db.execute(
+                            stmt_sq.on_conflict_do_nothing(index_elements=['url'])
+                        )
+                    else:
+                        stmt_pg = pg_insert(Article).values(articles_to_insert)
+                        res = await db.execute(
+                            stmt_pg.on_conflict_do_nothing(index_elements=['url'])
+                        )
+
+                    if isinstance(res, CursorResult):
+                        # Bulk operation may ignore duplicates — count actual inserts.
+                        inserted_count = res.rowcount or 0
+                    else:
+                        inserted_count = 0
                 
                 # 4. Update last_collected_at
-                source.last_collected_at = datetime.now()
+                source.last_collected_at = datetime.now(UTC)
                 await db.commit()
                 
                 summaries.append(SourceCollectionSummary(
@@ -115,7 +121,7 @@ class CollectionOrchestrator:
                     error=f"Skipped - {e}"
                 ))
             except Exception as e:
-                logger.exception(f"Unexpected error collecting from {source.name}: {e}")
+                logger.exception(f"Unexpected error collecting from {source.name}")
                 summaries.append(SourceCollectionSummary(
                     source_name=source.name,
                     articles_fetched=0,
@@ -134,8 +140,8 @@ class CollectionOrchestrator:
             prep_orchestrator = PreprocessingOrchestrator()
             prep_summary = await prep_orchestrator.run_preprocessing_cycle(db)
             logger.info(f"Auto-preprocessing completed. Processed: {prep_summary.total_processed}")
-        except Exception as e:
-            logger.exception(f"Auto-preprocessing failed: {e}")
+        except Exception:
+            logger.exception("Auto-preprocessing failed")
             
         return summaries
 

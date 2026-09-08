@@ -9,7 +9,7 @@ class EmbeddingService:
     _model: SentenceTransformer | None = None
 
     @classmethod
-    def load_model(cls):
+    def load_model(cls) -> None:
         """Called during app lifespan to load the model once."""
         if cls._model is None:
             logger.info("Loading SentenceTransformer model all-mpnet-base-v2...")
@@ -27,7 +27,7 @@ class EmbeddingService:
         # We can pass truncation=True to be explicit.
         # It returns a numpy array, we convert to list of floats for pgvector.
         embedding = cls._model.encode(text, convert_to_numpy=True, normalize_embeddings=True)
-        
+        return [float(x) for x in embedding]
         # In case the result is 2D (if we passed a list), return the first element.
         # But we passed a string, so it should be a 1D array of floats.
         return embedding.tolist()

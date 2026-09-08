@@ -1,3 +1,5 @@
+from typing import Any
+
 from fastapi import APIRouter, Depends
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,7 +13,7 @@ router = APIRouter()
 
 
 @router.post("/trigger", dependencies=[Depends(require_role(RoleEnum.admin))])
-async def trigger_nlp(db: AsyncSession = Depends(get_db_session)):
+async def trigger_nlp(db: AsyncSession = Depends(get_db_session)) -> dict[str, Any]:
     """Manually trigger a cycle of NLP extraction."""
     orchestrator = NLPOrchestrator()
     summary = await orchestrator.run_nlp_cycle(db)
@@ -19,7 +21,7 @@ async def trigger_nlp(db: AsyncSession = Depends(get_db_session)):
 
 
 @router.get("/status", dependencies=[Depends(get_current_user)])
-async def get_nlp_status(db: AsyncSession = Depends(get_db_session)):
+async def get_nlp_status(db: AsyncSession = Depends(get_db_session)) -> dict[str, Any]:
     """Get the current NLP status counts of articles."""
     stmt = select(Article.nlp_status, func.count(Article.id)).group_by(Article.nlp_status)
     result = await db.execute(stmt)

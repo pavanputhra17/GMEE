@@ -2,6 +2,7 @@
 
 import json
 import logging
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import text
@@ -19,7 +20,7 @@ async def list_verdicts(
     outlet: str = Query("", max_length=80),
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
-):
+) -> dict[str, Any]:
     where = ["c.verdict IS NOT NULL"]
     params: dict[str, object] = {"limit": limit, "offset": offset}
     if band:
@@ -71,7 +72,7 @@ async def list_verdicts(
 
 
 @router.get("/stats")
-async def verdict_stats():
+async def verdict_stats() -> dict[str, Any]:
     async with async_session_maker() as db:
         dist = (
             await db.execute(
@@ -127,7 +128,7 @@ async def verdict_stats():
 
 
 @router.get("/leaderboard")
-async def outlet_leaderboard():
+async def outlet_leaderboard() -> dict[str, Any]:
     """Outlets ranked by Laplace-smoothed credibility over their verdicted claims."""
     stats = await verdict_stats()
     ranked = sorted(stats["outlets"], key=lambda o: (-o["credibility"], -o["claims"]))
@@ -135,7 +136,7 @@ async def outlet_leaderboard():
 
 
 @router.get("/{claim_id}")
-async def verdict_detail(claim_id: str):
+async def verdict_detail(claim_id: str) -> dict[str, Any]:
     """Full transparency: the claim, its verdict, and EVERY factor."""
     async with async_session_maker() as db:
         row = (
@@ -164,7 +165,8 @@ async def verdict_detail(claim_id: str):
     try:
         m["verdict_evidence"] = json.loads(m["verdict_evidence"]) if isinstance(m["verdict_evidence"], str) else m["verdict_evidence"]
     except Exception:
-        pass
+        logger.debug("verdict_evidence was not valid JSON — returning raw value")
+        m["verdict_evidence"] = None
     if m.get("published_at"):
         m["published_at"] = m["published_at"].isoformat()
     return m
@@ -177,7 +179,7 @@ _MUT_TTL = 600.0  # seconds
 
 
 @router.get("/game/mutations")
-async def mutation_chains(min_versions: int = 3, limit: int = 8):
+async def mutation_chains(min_versions: int = 3, limit: int = 8) -> dict[str, Any]:
     """Claim mutation chains: same assertion, wording drifting outlet to
     outlet. Union-find over pgvector near-duplicate pairs (sim >= 0.90)."""
     import time as _time
@@ -237,7 +239,7 @@ async def mutation_chains(min_versions: int = 3, limit: int = 8):
     big.sort(key=len, reverse=True)
     big = big[:limit]
 
-    chains = []
+    chains: list[dict[str, Any]] = []
     async with async_session_maker() as db:
         for g in big:
             rows = (
@@ -274,13 +276,13 @@ async def mutation_chains(min_versions: int = 3, limit: int = 8):
                     "distinct_outlets": len(domains),
                     "versions": versions,
                 })
-    chains.sort(key=lambda c: (-c["distinct_outlets"], -c["size"]))
+    chains.sort(key=lambda c: (-int(c["distinct_outlets"]), -int(c["size"])))
     result = chains[:limit]
     _MUT_CACHE["chains"] = (now, result)
     return {"chains": result}
 
 
-def _v_clean(val, limit: int) -> str | None:
+def _v_clean(val: Any, limit: int) -> str | None:
     import html as h
     import re as re_
     if not val:
@@ -294,10 +296,9 @@ def _v_clean(val, limit: int) -> str | None:
 
 
 @router.get("/game/claim")
-async def game_claim():
+async def game_claim() -> dict[str, Any]:
     """Random verdicted claim for Fact-or-Fake. Answer NOT included —
     client reveals via /verdicts/{id} so peeking requires effort :)"""
-    import random
 
     async with async_session_maker() as db:
         row = (

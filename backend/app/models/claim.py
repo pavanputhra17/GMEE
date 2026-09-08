@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime
+from typing import Any
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, Text
@@ -24,7 +25,7 @@ class Claim(Base):
     verdict: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     verdict_probability: Mapped[float | None] = mapped_column(Float, nullable=True)
     verdict_rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
-    verdict_evidence: Mapped[dict | None] = mapped_column(JSON().with_variant(JSONB, "postgresql"), nullable=True)
+    verdict_evidence: Mapped[dict[str, Any] | None] = mapped_column(JSON().with_variant(JSONB, "postgresql"), nullable=True)
     
     entities: Mapped[list["ClaimEntity"]] = relationship("ClaimEntity", back_populates="claim", cascade="all, delete-orphan")
 

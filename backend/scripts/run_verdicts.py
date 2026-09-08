@@ -1,3 +1,5 @@
+# mypy: disallow-untyped-defs=False, disallow-incomplete-defs=False, disallow-any-generics=False
+
 """Batch verdict runner — scores every claim in the corpus.
 
 For each claim:
@@ -17,10 +19,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from sqlalchemy import text  # noqa: E402
+from sqlalchemy import text
 
-from app.db.postgres import async_session_maker  # noqa: E402
-from app.services.verdict.engine import (  # noqa: E402
+from app.db.postgres import async_session_maker
+from app.services.verdict.engine import (
     VerdictEngine,
     nli_stance,
 )
@@ -137,7 +139,7 @@ async def score_claim(db, claim: dict, track: dict) -> dict | None:
     }
 
 
-from app.services.verdict.engine import NEAR_MIN, NEAR_MAX  # noqa: E402
+from app.services.verdict.engine import NEAR_MAX, NEAR_MIN
 
 
 async def persist(db, claim_id: str, v: dict) -> None:

@@ -13,6 +13,7 @@ import json
 import logging
 import time
 from collections.abc import Awaitable, Callable
+from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.responses import JSONResponse, Response
@@ -20,7 +21,6 @@ from redis.asyncio import Redis
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import get_settings
 from app.db.redis_client import redis_client as _redis_singleton
 
 logger = logging.getLogger(__name__)
@@ -95,7 +95,10 @@ def install_rate_limiter(app: FastAPI) -> None:
     """Register the limiter as an HTTP middleware."""
 
     @app.middleware("http")
-    async def _rl(request: Request, call_next):
+    async def _rl(
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response | JSONResponse:
         return await rate_limit_middleware(request, call_next)
 
 
@@ -120,7 +123,10 @@ SECURITY_HEADERS: dict[str, str] = {
 
 def install_security_headers(app: FastAPI) -> None:
     @app.middleware("http")
-    async def _headers(request: Request, call_next):
+    async def _headers(
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
         response = await call_next(request)
         for header, value in SECURITY_HEADERS.items():
             response.headers.setdefault(header, value)
@@ -137,7 +143,7 @@ async def record_audit(
     actor: str | None,
     action: str,
     target: str | None = None,
-    detail: dict | None = None,
+    detail: dict[str, Any] | None = None,
     request: Request | None = None,
 ) -> None:
     """Best-effort audit insert — never breaks the caller's transaction flow."""

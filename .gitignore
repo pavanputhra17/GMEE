@@ -57,3 +57,6 @@ redis-data/
 tsconfig.tsbuildinfo
 *.tsbuildinfo
 dataaa/
+
+# Test coverage output
+coverage/

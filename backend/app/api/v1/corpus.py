@@ -3,7 +3,7 @@
 import html as htmllib
 import logging
 import re
-from collections import defaultdict
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import text
@@ -25,7 +25,7 @@ async def list_articles(
     domain: str = Query("", max_length=80),
     limit: int = Query(30, ge=1, le=100),
     offset: int = Query(0, ge=0),
-):
+) -> dict[str, Any]:
     """Paginated, searchable corpus listing."""
     like = f"%{q}%"
     where = ["processing_status = 'processed'"]
@@ -84,7 +84,7 @@ async def list_articles(
 
 
 @router.get("/articles/recent")
-async def recent_articles(limit: int = Query(12, ge=1, le=40)):
+async def recent_articles(limit: int = Query(12, ge=1, le=40)) -> dict[str, Any]:
     """Most recently collected articles — the true ingest stream."""
     async with async_session_maker() as db:
         rows = (
@@ -114,7 +114,7 @@ async def recent_articles(limit: int = Query(12, ge=1, le=40)):
 
 
 @router.get("/stats")
-async def corpus_stats():
+async def corpus_stats() -> dict[str, Any]:
     """Real corpus statistics for telemetry panels."""
     async with async_session_maker() as db:
         row = (
@@ -156,7 +156,7 @@ async def corpus_stats():
 async def semantic_search(
     q: str = Query(..., min_length=2, max_length=300),
     limit: int = Query(10, ge=1, le=30),
-):
+) -> dict[str, Any]:
     """Nearest-neighbor article search via pgvector cosine distance."""
     from sqlalchemy import text as sql_text
 
@@ -200,7 +200,7 @@ async def semantic_search(
 
 
 @router.get("/articles/{article_id}")
-async def article_detail(article_id: str):
+async def article_detail(article_id: str) -> dict[str, Any]:
     async with async_session_maker() as db:
         row = (
             await db.execute(
@@ -224,11 +224,11 @@ async def article_detail(article_id: str):
 
 
 @router.get("/graph/story-clusters")
-async def story_clusters(min_links: int = Query(3, ge=1), limit: int = Query(6, ge=1, le=20)):
+async def story_clusters(min_links: int = Query(3, ge=1), limit: int = Query(6, ge=1, le=20)) -> dict[str, Any]:
     """Hub stories (most SIMILAR links) with their cross-outlet neighbors."""
     driver = await neo4j_client.get_driver()
 
-    async def _run(tx):
+    async def _run(tx: Any) -> Any:
         hubs_res = await tx.run(
             """
             MATCH (a:Article)-[e:SIMILAR]-(b:Article)
@@ -263,10 +263,10 @@ async def story_clusters(min_links: int = Query(3, ge=1), limit: int = Query(6, 
 
 
 @router.get("/graph/stats")
-async def graph_stats():
+async def graph_stats() -> dict[str, Any]:
     driver = await neo4j_client.get_driver()
 
-    async def _run(tx):
+    async def _run(tx: Any) -> Any:
         stats = {}
         for label, q in [
             ("articles", "MATCH (a:Article) RETURN count(a)"),
@@ -296,7 +296,7 @@ async def graph_stats():
 _TAG_RE = re.compile(r"<[^a-z/!]|</?[a-z][^>]*>", re.IGNORECASE)
 
 
-def _clean_text(v, limit: int = 240) -> str | None:
+def _clean_text(v: Any, limit: int = 240) -> str | None:
     """Strip any markup/entities from stored text before it reaches the UI."""
     if not v:
         return None

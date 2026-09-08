@@ -18,7 +18,7 @@ class EntityExtractor:
     _nlp: Language | None = None
 
     @classmethod
-    def load_model(cls):
+    def load_model(cls) -> None:
         """Called during app lifespan to load the model once."""
         if cls._nlp is None:
             logger.info("Loading spaCy model en_core_web_sm...")

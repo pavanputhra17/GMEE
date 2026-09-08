@@ -14,10 +14,6 @@ os.environ["REDIS_URL"] = "redis://localhost:6379/0"
 os.environ["CORS_ORIGINS"] = "http://localhost:3000"
 os.environ["JWT_SECRET"] = "super_secret_test_jwt_key_that_is_at_least_32_chars"
 
-from app.api.deps import get_db_session, get_redis_client
-from app.main import app
-from app.models.base import Base
-
 # ---------------------------------------------------------------------------
 # Dialect compatibility: the models use Postgres-specific types (JSONB,
 # pgvector Vector) but the test suite runs on in-memory SQLite. Register
@@ -28,14 +24,18 @@ from sqlalchemy import JSON
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.compiler import compiles
 
+from app.api.deps import get_db_session, get_redis_client
+from app.main import app
+from app.models.base import Base
+
 
 @compiles(JSONB, "sqlite")
-def _compile_jsonb_sqlite(element, compiler, **kw):  # noqa: ANN001
+def _compile_jsonb_sqlite(element, compiler, **kw):
     return compiler.process(JSON())
 
 
 @compiles(Vector, "sqlite")
-def _compile_vector_sqlite(element, compiler, **kw):  # noqa: ANN001
+def _compile_vector_sqlite(element, compiler, **kw):
     dim = getattr(element, "dim", None)
     return f"BLOB({dim})" if dim else "BLOB"
 

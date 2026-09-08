@@ -36,13 +36,15 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=8.2.1",
-    "pytest-cov>=5.0.0",
-    "pytest-asyncio>=0.23.6",
-    "aiosqlite>=0.20.0",
-    "fakeredis>=2.23.0",
-    "ruff>=0.4.5",
-    "mypy>=1.10.0",
+    # Exact pins: quality gates must not silently drift under the codebase.
+    # Bump deliberately, as a reviewed diff.
+    "pytest==9.1.1",
+    "pytest-cov==7.1.0",
+    "pytest-asyncio==1.4.0",
+    "aiosqlite==0.22.1",
+    "fakeredis==2.37.0",
+    "ruff==0.16.2",
+    "mypy==2.3.0",
 ]
 
 [tool.pytest.ini_options]
@@ -55,6 +57,14 @@ line-length = 88
 [tool.mypy]
 strict = true
 ignore_missing_imports = true
+
+# Test modules follow pytest conventions (untyped test functions are normal);
+# they still get their *bodies* fully checked via check_untyped_defs.
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+warn_return_any = false
 
 [tool.setuptools.packages.find]
 include = ["app*"]

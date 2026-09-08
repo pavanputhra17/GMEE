@@ -6,6 +6,7 @@ The whole corpus graph in one payload (6.4k nodes, ~800 edges ≈ 1-2MB JSON).
 import html as htmllib
 import logging
 import re
+from typing import Any
 
 from fastapi import APIRouter
 from sqlalchemy import text
@@ -19,7 +20,7 @@ router = APIRouter()
 _TAG_RE = re.compile(r"<[^a-z/!]|</?[a-z][^>]*>", re.IGNORECASE)
 
 
-def _clean_text(v, limit: int = 200) -> str | None:
+def _clean_text(v: Any, limit: int = 200) -> str | None:
     """Strip any markup/entities from stored text before it reaches the UI."""
     if not v:
         return None
@@ -29,10 +30,10 @@ def _clean_text(v, limit: int = 200) -> str | None:
 
 
 @router.get("/full")
-async def full_graph():
+async def full_graph() -> dict[str, Any]:
     driver = await neo4j_client.get_driver()
 
-    async def _run(tx):
+    async def _run(tx: Any) -> Any:
         # nodes: all articles with their outlet + degree
         nodes_res = await tx.run(
             """
@@ -101,7 +102,7 @@ async def full_graph():
 
 
 @router.get("/claims")
-async def claims_graph(limit: int = 1200):
+async def claims_graph(limit: int = 1200) -> dict[str, Any]:
     """Claims network from Postgres pgvector: near-duplicate claim pairs as edges."""
     from app.db.postgres import async_session_maker
 
@@ -161,7 +162,7 @@ async def claims_graph(limit: int = 1200):
 
 
 @router.get("/timeline")
-async def timeline_clusters(limit: int = 60):
+async def timeline_clusters(limit: int = 60) -> dict[str, Any]:
     """Story clusters ordered newest-first for the 3D timeline tunnel.
 
     Each ring = one hub story (most-linked article of its connected group),
@@ -170,7 +171,7 @@ async def timeline_clusters(limit: int = 60):
     """
     driver = await neo4j_client.get_driver()
 
-    async def _run(tx):
+    async def _run(tx: Any) -> Any:
         res = await tx.run(
             """
             MATCH (a:Article)-[:SIMILAR]-(b:Article)
@@ -228,12 +229,12 @@ async def timeline_clusters(limit: int = 60):
 
 
 @router.get("/scoops")
-async def scoop_races(limit: int = 12):
+async def scoop_races(limit: int = 12) -> dict[str, Any]:
     """Who broke each story first? For every linked cluster: outlets ranked
     by publish time with exact lag behind the winner."""
     driver = await neo4j_client.get_driver()
 
-    async def _run(tx):
+    async def _run(tx: Any) -> Any:
         res = await tx.run(
             """
             MATCH (a:Article)-[:SIMILAR]-(b:Article)
@@ -257,13 +258,13 @@ async def scoop_races(limit: int = 12):
 
     from datetime import datetime
 
-    def ts(v):
+    def ts(v: Any) -> datetime | None:
         if not v:
             return None
         if isinstance(v, datetime):
             return v
         try:
-            return datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+            return datetime.fromisoformat(str(v))
         except Exception:
             return None
 

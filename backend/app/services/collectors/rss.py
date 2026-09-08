@@ -1,6 +1,6 @@
+import calendar
 import logging
-from datetime import datetime
-from time import mktime
+from datetime import UTC, datetime
 
 import feedparser
 import httpx
@@ -59,11 +59,17 @@ class RSSCollector(BaseCollector):
                     content_html = entry.summary
                 
                 # Extract published_at
+                # feedparser's *_parsed struct_times are UTC — use timegm,
+                # not mktime, so hosts on non-UTC local time stay correct.
                 published_at = None
                 if "published_parsed" in entry and entry.published_parsed:
-                    published_at = datetime.fromtimestamp(mktime(entry.published_parsed))
+                    published_at = datetime.fromtimestamp(
+                        calendar.timegm(entry.published_parsed), tz=UTC
+                    )
                 elif "updated_parsed" in entry and entry.updated_parsed:
-                    published_at = datetime.fromtimestamp(mktime(entry.updated_parsed))
+                    published_at = datetime.fromtimestamp(
+                        calendar.timegm(entry.updated_parsed), tz=UTC
+                    )
                     
                 # Extract author
                 author = entry.get("author", None)

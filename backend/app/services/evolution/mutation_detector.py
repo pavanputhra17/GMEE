@@ -2,6 +2,7 @@ import logging
 import uuid
 from collections import defaultdict
 from collections.abc import Sequence
+from datetime import datetime
 
 from sentence_transformers.util import cos_sim
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 
 class MutationDetector:
-    def __init__(self):
+    def __init__(self) -> None:
         self.settings = get_settings()
 
     async def run_mutation_detection(self, db: AsyncSession, assignments: Sequence[ClaimClusterAssignment], claims_by_id: dict[uuid.UUID, Claim], articles_by_id: dict[uuid.UUID, Article]) -> list[ClaimRelationship]:
@@ -35,13 +36,13 @@ class MutationDetector:
         evo_threshold = self.settings.EVOLUTION_SIMILARITY_THRESHOLD
         sim_threshold = self.settings.SIMILAR_TO_THRESHOLD
 
-        for topic_id, claim_ids in topic_groups.items():
+        for claim_ids in topic_groups.values():
             if len(claim_ids) < 2:
                 continue
 
             # Resolve claims and their temporal ordering
             # Order: published_at (if available), else extracted_at
-            def get_time(cid: uuid.UUID):
+            def get_time(cid: uuid.UUID) -> datetime:
                 claim = claims_by_id[cid]
                 article = articles_by_id[claim.article_id]
                 return article.published_at or claim.extracted_at

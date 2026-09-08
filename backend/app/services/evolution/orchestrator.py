@@ -1,5 +1,6 @@
 import logging
 from collections.abc import Sequence
+from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,13 +19,13 @@ logger = logging.getLogger(__name__)
 
 
 class EvolutionOrchestrator:
-    def __init__(self):
+    def __init__(self) -> None:
         self.settings = get_settings()
         self.cluster_service = ClusterService()
         self.mutation_detector = MutationDetector()
         self.neo4j_writer = Neo4jWriter()
 
-    async def run_evolution_cycle(self, db: AsyncSession, force: bool = False) -> dict:
+    async def run_evolution_cycle(self, db: AsyncSession, force: bool = False) -> dict[str, Any]:
         """
         Executes the evolution engine: clustering, mutation detection, graph sync.
         Respects guards for minimum corpus size and debounce (new claims).

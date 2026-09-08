@@ -1,4 +1,5 @@
 import logging
+import uuid
 from collections.abc import Sequence
 
 from neo4j import AsyncSession
@@ -16,8 +17,8 @@ class Neo4jWriter:
     async def sync_to_graph(
         self,
         claims: Sequence[Claim],
-        articles_by_id: dict,
-        sources_by_id: dict,
+        articles_by_id: dict[uuid.UUID, Article],
+        sources_by_id: dict[uuid.UUID, Source],
         relationships: Sequence[ClaimRelationship]
     ) -> bool:
         """
@@ -32,11 +33,17 @@ class Neo4jWriter:
                 await self._merge_relationships(session, relationships)
             logger.info("Neo4j graph sync completed successfully.")
             return True
-        except Exception as e:
-            logger.exception(f"Failed to sync to Neo4j: {e}")
+        except Exception:
+            logger.exception("Failed to sync to Neo4j")
             return False
 
-    async def _merge_claims_entities_sources(self, session: AsyncSession, claims: Sequence[Claim], articles_by_id: dict, sources_by_id: dict):
+    async def _merge_claims_entities_sources(
+        self,
+        session: AsyncSession,
+        claims: Sequence[Claim],
+        articles_by_id: dict[uuid.UUID, Article],
+        sources_by_id: dict[uuid.UUID, Source],
+    ) -> None:
         for claim in claims:
             article: Article = articles_by_id[claim.article_id]
             source: Source = sources_by_id[article.source_id]
@@ -69,7 +76,7 @@ class Neo4jWriter:
                     MERGE (c)-[:MENTIONS]->(e)
                 """, text=entity.entity_text, type=entity.entity_type, claim_id=str(claim.id))
 
-    async def _merge_relationships(self, session: AsyncSession, relationships: Sequence[ClaimRelationship]):
+    async def _merge_relationships(self, session: AsyncSession, relationships: Sequence[ClaimRelationship]) -> None:
         for rel in relationships:
             await session.run(f"""
                 MATCH (from_claim:Claim {{id: $from_id}})

@@ -4,6 +4,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from app.core.config import Settings
 from app.models.source import Source
 
 
@@ -21,6 +22,9 @@ class MissingCredentialsError(Exception):
 
 
 class BaseCollector(ABC):
+    # Concrete collectors populate this in their __init__ via get_settings().
+    settings: Settings
+
     @abstractmethod
     async def collect(self, source: Source) -> list[RawArticle]:
         """Fetch and return articles for a single source. Must not raise on

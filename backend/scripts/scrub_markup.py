@@ -1,3 +1,5 @@
+# mypy: disallow-untyped-defs=False, disallow-incomplete-defs=False, disallow-any-generics=False
+
 """One-time scrub: strip HTML from article titles and claim texts.
 
 The friend's scraper embedded <a href=...><img align="left">...</a> markup in
@@ -16,9 +18,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from sqlalchemy import text  # noqa: E402
+from sqlalchemy import text
 
-from app.db.postgres import async_session_maker  # noqa: E402
+from app.db.postgres import async_session_maker
 
 TAG_RE = re.compile(r"<[^>]+>")
 

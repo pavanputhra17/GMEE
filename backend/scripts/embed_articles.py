@@ -1,3 +1,5 @@
+# mypy: disallow-untyped-defs=False, disallow-incomplete-defs=False, disallow-any-generics=False
+
 """Semantic search over the article corpus using pgvector.
 
 Embeds the query with the project's own model (all-mpnet-base-v2), then
@@ -7,9 +9,9 @@ cost is paid once).
 """
 
 import asyncio
-import os
 import sys
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -81,7 +83,7 @@ async def backfill(limit: int = 1000) -> int:
 _model = None
 
 
-def _load_model():
+def _load_model() -> Any:
     global _model
     if _model is None:
         from sentence_transformers import SentenceTransformer

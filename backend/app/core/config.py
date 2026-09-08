@@ -55,9 +55,8 @@ class Settings(BaseSettings):
             return [i.strip() for i in v.split(",") if i.strip()]
         return v
 
-    # In Docker compose, we rely on the root .env file injected into the container environment.
-    # So this reads directly from env variables, failing fast if missing.
-    model_config = SettingsConfigDict(env_file=None, extra="ignore")
+    # Loads from local .env or parent root .env if running outside container
+    model_config = SettingsConfigDict(env_file=(".env", "../.env"), extra="ignore")
 
 @lru_cache
 def get_settings() -> Settings:

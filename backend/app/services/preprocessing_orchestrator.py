@@ -1,6 +1,6 @@
 import logging
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 from sqlalchemy import select
@@ -23,18 +23,12 @@ logger = logging.getLogger(__name__)
 @dataclass
 class PreprocessingSummary:
     total_processed: int = 0
-    status_counts: dict[str, int] = None
-    errors: list[str] = None
-
-    def __post_init__(self):
-        if self.status_counts is None:
-            self.status_counts = {
-                ProcessingStatusEnum.processed.value: 0,
-                ProcessingStatusEnum.skipped_non_english.value: 0,
-                ProcessingStatusEnum.failed.value: 0,
-            }
-        if self.errors is None:
-            self.errors = []
+    status_counts: dict[str, int] = field(default_factory=lambda: {
+        ProcessingStatusEnum.processed.value: 0,
+        ProcessingStatusEnum.skipped_non_english.value: 0,
+        ProcessingStatusEnum.failed.value: 0,
+    })
+    errors: list[str] = field(default_factory=list)
 
 
 class PreprocessingOrchestrator:
@@ -43,7 +37,7 @@ class PreprocessingOrchestrator:
     async def run_preprocessing_cycle(self, db: AsyncSession) -> PreprocessingSummary:
         logger.info("Starting preprocessing cycle")
         summary = PreprocessingSummary()
-        
+
         dup_detector = NearDuplicateDetector(db)
         await dup_detector.initialize()
         
@@ -108,7 +102,7 @@ class PreprocessingOrchestrator:
                     
                 except Exception as e:
                     article_id = article.id
-                    logger.exception(f"Error preprocessing article {article_id}: {e}")
+                    logger.exception(f"Error preprocessing article {article_id}")
                     # Re-fetch article from db to discard uncommitted changes before marking failed
                     await db.rollback()
                     

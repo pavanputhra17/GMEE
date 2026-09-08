@@ -1,4 +1,5 @@
 import uuid
+from typing import Any
 
 import httpx
 import pytest
@@ -17,15 +18,20 @@ from app.services.collectors.rss import RSSCollector
 
 
 class MockResponse:
-    def __init__(self, text="", json_data=None, status_code=200):
+    def __init__(
+        self,
+        text: str = "",
+        json_data: Any = None,
+        status_code: int = 200,
+    ) -> None:
         self.text = text
         self._json = json_data
         self.status_code = status_code
 
-    def json(self):
+    def json(self) -> Any:
         return self._json
 
-    def raise_for_status(self):
+    def raise_for_status(self) -> None:
         if self.status_code >= 400:
             raise httpx.HTTPStatusError("Error", request=None, response=self)  # type: ignore
 
@@ -177,8 +183,8 @@ async def test_orchestrator_resilience(db_session: AsyncSession, mock_httpx_get,
     reddit_sum = next(s for s in summaries if s.source_name == "Reddit")
     
     assert bbc_sum.error is None
-    assert "Skipped - NewsAPI key missing" in news_sum.error
-    assert "Failed - Simulated crash" in reddit_sum.error
+    assert "Skipped - NewsAPI key missing" in (news_sum.error or "")
+    assert "Failed - Simulated crash" in (reddit_sum.error or "")
 
 
 async def test_trigger_endpoint_admin(async_client, mock_httpx_get, mock_httpx_post, monkeypatch):

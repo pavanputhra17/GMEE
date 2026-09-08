@@ -1,8 +1,11 @@
+import logging
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlparse
 
 from dateutil.parser import parse as dateutil_parse
+
+logger = logging.getLogger(__name__)
 
 
 def extract_domain(url: str | None) -> str | None:
@@ -47,7 +50,8 @@ def extract_or_repair_published_at(
                     parsed_date = dateutil_parse(val)
                     if parsed_date is not None and isinstance(parsed_date, datetime):
                         return parsed_date
-            except Exception:
+            except Exception as exc:
+                logger.debug("date parse fallback failed (%r): %s", val, exc)
                 continue
                 
     return None

@@ -1,5 +1,6 @@
 import uuid
 from datetime import UTC, datetime, timedelta
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -13,6 +14,7 @@ from app.models.evolution import (
     ClaimRelationship,
     RelationshipTypeEnum,
 )
+from app.models.source import Source
 from app.services.evolution.mutation_detector import MutationDetector
 from app.services.evolution.neo4j_writer import Neo4jWriter
 from app.services.evolution.orchestrator import EvolutionOrchestrator
@@ -150,7 +152,7 @@ async def test_neo4j_writer_idempotency():
         
         claims = [c0]
         articles = {art.id: art}
-        sources = {src.id: src}
+        sources = {src.id: cast(Source, src)}
         relationships = [
             ClaimRelationship(
                 from_claim_id=c0.id, to_claim_id=c0.id, 

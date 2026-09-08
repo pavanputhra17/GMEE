@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 
 import httpx
 
@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 class RedditCollector(BaseCollector):
-    def __init__(self):
+    def __init__(self) -> None:
         self.settings = get_settings()
         self._access_token: str | None = None
         self._token_expires_at: float = 0
@@ -27,7 +27,7 @@ class RedditCollector(BaseCollector):
         if not client_id or not client_secret:
             return None
             
-        now = datetime.now().timestamp()
+        now = datetime.now(UTC).timestamp()
         if self._access_token and now < self._token_expires_at:
             return self._access_token
 
@@ -111,7 +111,7 @@ class RedditCollector(BaseCollector):
                 content = post.get("selftext") or None
                 
                 created_utc = post.get("created_utc")
-                published_at = datetime.fromtimestamp(created_utc) if created_utc else None
+                published_at = datetime.fromtimestamp(created_utc, tz=UTC) if created_utc else None
                 
                 author = post.get("author")
                 
