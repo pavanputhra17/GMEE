@@ -133,7 +133,7 @@ export const SystemHealth: React.FC = () => {
   const [telemetry, setTelemetry] = useState<DemoTelemetry>(DEMO_BASE);
 
   // Derived BEFORE the query so options never reference their own result.
-  const demoMode = demoOverride === true || (demoOverride === null && !everConnected);
+  const demoMode = false;
 
   const { data, error, isLoading, isFetching, refetch } = useQuery<HealthStatus>({
     queryKey: ['health'],
