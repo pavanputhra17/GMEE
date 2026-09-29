@@ -12,7 +12,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY . .
 
 RUN pip install --upgrade pip && \
-    pip install --no-cache-dir -e .[dev] && \
+    pip install --no-cache-dir -e . && \
     python -m spacy download en_core_web_sm
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+EXPOSE 8000
+
+# Production: no --reload, 2 workers for free tier, bind to PORT env var
+CMD uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 2
