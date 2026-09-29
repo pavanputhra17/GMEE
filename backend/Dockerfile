@@ -15,7 +15,10 @@ RUN pip install --upgrade pip && \
     pip install --no-cache-dir -e . && \
     python -m spacy download en_core_web_sm
 
+RUN chmod +x start.sh
+
 EXPOSE 8000
 
-# Production: no --reload, 2 workers for free tier, bind to PORT env var
-CMD uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 2
+# Production: run migrations then start uvicorn
+CMD ["./start.sh"]
+

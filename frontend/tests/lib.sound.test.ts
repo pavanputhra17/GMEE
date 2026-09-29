@@ -45,7 +45,8 @@ class FakeAudioContext {
     Object.assign(f, { type: 'lowpass', frequency: new FakeAudioParam() });
     return f;
   }
-  createBuffer(_ch: number, len: number) {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  createBuffer(_ch: number, len: number, _rate: number) {
     return { getChannelData: () => new Float32Array(len) };
   }
 }
