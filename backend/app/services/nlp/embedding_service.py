@@ -28,7 +28,7 @@ class EmbeddingService:
     @classmethod
     def generate_embedding(cls, text: str) -> list[float]:
         if cls._model is None:
-            raise RuntimeError("Embedding model not loaded. Call load_model() first.")
+            cls.load_model()
 
         # The model automatically truncates to its max_seq_length
         # (384 for all-mpnet-base-v2).

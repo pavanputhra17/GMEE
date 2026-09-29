@@ -29,9 +29,7 @@ from app.services.seeder import seed_sources
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    # Load heavy NLP models on startup
-    EntityExtractor.load_model()
-    EmbeddingService.load_model()
+    # Models are lazy-loaded when needed (to avoid OOM on limited memory)
     # Startup
     settings = get_settings()
 

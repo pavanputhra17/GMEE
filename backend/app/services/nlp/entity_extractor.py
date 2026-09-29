@@ -28,7 +28,7 @@ class EntityExtractor:
     @classmethod
     def extract_entities(cls, text: str) -> list[ExtractedEntity]:
         if cls._nlp is None:
-            raise RuntimeError("spaCy model not loaded. Call load_model() first.")
+            cls.load_model()
         
         doc = cls._nlp(text)
         entities = []
@@ -47,7 +47,7 @@ class EntityExtractor:
     def extract_keywords(cls, text: str) -> list[str]:
         """Extract noun chunks as lightweight keywords."""
         if cls._nlp is None:
-            raise RuntimeError("spaCy model not loaded. Call load_model() first.")
+            cls.load_model()
             
         doc = cls._nlp(text)
         # Using a set to deduplicate noun chunks (case-insensitive)
