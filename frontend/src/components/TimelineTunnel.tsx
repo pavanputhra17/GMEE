@@ -1,8 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Orbit, MousePointerClick, ExternalLink, RotateCcw } from 'lucide-react';
+import { Orbit, MousePointerClick, RotateCcw, X } from 'lucide-react';
 import { timelineApi, TimelineCluster } from '../api/timeline';
 
+import { useSelectedArticle, clearSelectedArticle } from '../lib/useSelectedArticle';
+import { ClusterDossier } from './ClusterDossier';
 /**
  * TimelineTunnel — 3D story-time tunnel. Pure canvas projection, zero deps.
  *
@@ -13,7 +15,11 @@ import { timelineApi, TimelineCluster } from '../api/timeline';
  *   · MOUSE-WHEEL dives deeper / rises back up
  *   · Side rail lists the dive order; ESC or ↑ resets to surface
  *
- * Motion rules honored: damped easing, no jitter, reduced-motion respected.
+ * Graph→timeline drill-down: when a story is selected in a graph tab
+ * (useSelectedArticle), the tunnel fetches ONLY that story's connected
+ * clusters (`?article_id=`) — diving still reads newest → oldest, ending
+ * at the original first report. Motion rules honored: damped easing,
+ * no jitter, reduced-motion respected.
  */
 
 const OUTLET_COLORS: Record<string, string> = {
@@ -47,15 +53,46 @@ export default function TimelineTunnel(): React.ReactElement {
   const starsRef = useRef<Array<{ x: number; y: number; z: number }>>([]);
   const mouseRef = useRef({ x: 0, y: 0 });
   const [depth, setDepth] = useState(0); // index of nearest cluster
+  const depthRef = useRef(0); // mirrors `depth` for gesture math (no stale closures)
   const [inspect, setInspect] = useState<TimelineCluster | null>(null);
 
+  // keep the gesture mirror in sync with every other depth setter
+  // (rail buttons, keyboard, ring clicks, Surface reset)
+  useEffect(() => {
+    depthRef.current = depth;
+  }, [depth]);
+
+  // Graph→timeline drill-down: a story selected in a graph tab focuses the
+  // tunnel on that story's connected clusters only (backend BFS ≤3 hops).
+  const sel = useSelectedArticle();
+  const selId = sel?.id ?? null;
+
   const q = useQuery({
-    queryKey: ['timeline'],
-    queryFn: () => timelineApi.clusters(60),
+    queryKey: ['timeline', selId ?? 'all'],
+    queryFn: () => timelineApi.clusters(60, selId ?? undefined),
     refetchInterval: 45000,
   });
 
-  const clusters = useMemo(() => q.data?.clusters ?? [], [q.data]);
+  const clusters = useMemo(() => {
+    const list = q.data?.clusters ?? [];
+    // Ordering safety net: the tunnel dives to higher indices, so rings MUST
+    // run newest-first (index 0 nearest = latest development, deepest =
+    // original first report). Sort by the freshest time in each cluster.
+    const t = (c: TimelineCluster) =>
+      Date.parse(c.newest_member_at ?? c.published_at ?? '') || 0;
+    return [...list].sort((a, b) => t(b) - t(a));
+  }, [q.data]);
+
+  // A fresh selection (or clearing it) re-anchors the dive: back to the
+  // surface, facing the newest ring of the focused story.
+  useEffect(() => {
+    setDepth(0);
+    depthRef.current = 0;
+    divingRef.current = false;
+    velRef.current = 0;
+    camRef.current = { z: -260 };
+    targetRef.current = { z: -260 };
+  }, [selId]);
 
   // deterministic per-cluster layout around the tunnel axis
   const layout = useMemo(() => {
@@ -85,15 +122,19 @@ export default function TimelineTunnel(): React.ReactElement {
     targetRef.current.z = layout[d].z - 300; // stand slightly before the ring
   }, [depth, layout]);
 
-  // wheel = dive / rise
+  // wheel = dive / rise — but never a black hole for the page scroll
   useEffect(() => {
     const el = wrapRef.current;
     if (!el || !layout.length) return;
     const onWheel = (e: WheelEvent) => {
+      // Modified gestures (browser zoom, horizontal pan) belong to the page.
+      if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
+      const from = depthRef.current;
+      const next = Math.max(0, Math.min(layout.length - 1, from + (e.deltaY > 0 ? 1 : -1)));
+      if (next === from) return;
       e.preventDefault();
-      setDepth((d) =>
-        Math.max(0, Math.min(layout.length - 1, d + (e.deltaY > 0 ? 1 : -1)))
-      );
+      depthRef.current = next;
+      setDepth(next);
     };
     el.addEventListener('wheel', onWheel, { passive: false });
     return () => el.removeEventListener('wheel', onWheel);
@@ -328,7 +369,7 @@ export default function TimelineTunnel(): React.ReactElement {
       {/* header */}
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 pb-4 border-b border-hermes-bone/12">
         <div>
-          <div className="flex items-center gap-2 mb-1">
+          <div className="flex items-center gap-2 mb-1 flex-wrap">
             <Orbit className="w-5 h-5" />
             <h2 className="text-2xl font-display">Story Time Tunnel</h2>
             {!q.isLoading && (
@@ -336,14 +377,35 @@ export default function TimelineTunnel(): React.ReactElement {
                 {clusters.length} clusters · newest on top
               </span>
             )}
+            {sel && (
+              <span className="chip-brutal border-emerald-400/50 bg-emerald-400/10 text-emerald-300 flex items-center gap-1.5 max-w-[380px]">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
+                <span className="truncate">
+                  {sel.title.length > 48 ? sel.title.slice(0, 45) + '…' : sel.title}
+                </span>
+              </span>
+            )}
           </div>
           <p className="text-xs font-mono text-hermes-bone/55 uppercase tracking-wider">
             click a story → fall through time into the next · wheel drifts deeper
+            {sel ? ' · ends at the original first report' : ''}
           </p>
         </div>
-        <button onClick={resetSurface} className="btn-ghost-brutal !py-1.5 !px-3 !text-hermes-bone !border-hermes-bone/30 w-fit">
-          <RotateCcw className="w-3.5 h-3.5" /> Surface
-        </button>
+        <div className="flex items-center gap-2 shrink-0">
+          {sel && (
+            <button
+              onClick={clearSelectedArticle}
+              className="btn-ghost-brutal !py-1.5 !px-3 !text-hermes-bone !border-hermes-bone/30 w-fit"
+              title="Show every story cluster again"
+            >
+              <X className="w-3.5 h-3.5" />
+              All stories
+            </button>
+          )}
+          <button onClick={resetSurface} className="btn-ghost-brutal !py-1.5 !px-3 !text-hermes-bone !border-hermes-bone/30 w-fit">
+            <RotateCcw className="w-3.5 h-3.5" /> Surface
+          </button>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-[1fr_320px] gap-5">
@@ -358,18 +420,35 @@ export default function TimelineTunnel(): React.ReactElement {
               y: (e.clientY - r.top - r.height / 2) / (r.height / 2),
             };
           }}
+          data-depth={depth}
+          data-clusters={layout.length}
           className="relative bg-ink h-[620px] overflow-hidden cursor-pointer"
         >
           <canvas ref={cvRef} className="block" />
-          {!q.isLoading && clusters.length === 0 && (
+          {!q.isLoading && clusters.length === 0 && !sel && (
             <p className="absolute inset-0 flex items-center justify-center font-mono text-xs text-hermes-bone/50">
               No linked story clusters yet.
             </p>
           )}
+          {!q.isLoading && clusters.length === 0 && sel && (
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 px-8 text-center">
+              <p className="font-mono text-xs text-hermes-bone/60 leading-relaxed max-w-sm">
+                No linked coverage found for this story within 3 similarity hops.
+                It may be too new to have cross-outlet links yet.
+              </p>
+              <button
+                onClick={clearSelectedArticle}
+                className="btn-ghost-brutal !py-1.5 !px-3 !text-hermes-bone !border-hermes-bone/30 w-fit"
+              >
+                <X className="w-3.5 h-3.5" />
+                Back to all stories
+              </button>
+            </div>
+          )}
         </div>
 
         {/* side rail — dive order */}
-        <div className="border border-hermes-bone/15 bg-hermes-panel-deep p-4 h-[620px] overflow-y-auto">
+        <div className="border border-hermes-bone/15 bg-hermes-panel-deep p-4 h-[620px] overflow-y-auto scroll-contained">
           <div className="font-mono text-[10px] uppercase tracking-widest text-hermes-bone/45 mb-3 flex items-center gap-1.5">
             <MousePointerClick className="w-3.5 h-3.5" /> Dive order · newest first
           </div>
@@ -409,42 +488,11 @@ export default function TimelineTunnel(): React.ReactElement {
 
       {/* inspector */}
       {inspect && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" onClick={() => setInspect(null)}>
-          <div
-            className="max-w-xl w-full mx-4 border border-hermes-bone/25 bg-hermes-panel p-6 space-y-4"
-            onClick={(ev) => ev.stopPropagation()}
-          >
-            <div className="flex items-start justify-between gap-4 pb-3 border-b border-hermes-bone/15">
-              <div className="font-mono text-[10px] uppercase tracking-widest text-hermes-bone/45">
-                Cluster dossier · {inspect.members.length + 1} articles
-              </div>
-              <button onClick={() => setInspect(null)} className="btn-ghost-brutal !py-0.5 !px-2 !text-hermes-bone !border-hermes-bone/30">×</button>
-            </div>
-            <a href={inspect.url ?? '#'} target="_blank" rel="noreferrer" className="block group">
-              <h3 className="font-display text-lg leading-snug text-white group-hover:text-hermes-red-bright transition-colors">
-                {inspect.title}
-              </h3>
-              <div className="font-mono text-[10px] uppercase tracking-wider text-hermes-bone/45 mt-1">
-                {fmtDate(inspect.published_at)} · {inspect.domain?.replace('www.', '')} · hub
-              </div>
-            </a>
-            <div className="space-y-1.5 max-h-64 overflow-y-auto pr-1">
-              {inspect.members.map((m) => (
-                <a key={m.id} href={m.url ?? '#'} target="_blank" rel="noreferrer"
-                   className="group flex items-center gap-3 border border-hermes-bone/10 bg-hermes-panel-deep px-3 py-2 hover:border-hermes-bone/30">
-                  <span className="font-mono text-xs tabular-nums text-hermes-red-bright w-10 shrink-0 text-right">
-                    {(m.score * 100).toFixed(0)}
-                  </span>
-                  <span className="font-mono text-[10px] uppercase text-hermes-bone/40 w-28 truncate shrink-0">
-                    {m.domain?.replace('www.', '')}
-                  </span>
-                  <span className="text-xs text-hermes-bone/80 truncate">{m.title}</span>
-                  <ExternalLink className="w-3 h-3 ml-auto shrink-0 text-hermes-bone/30 group-hover:text-hermes-red-bright" />
-                </a>
-              ))}
-            </div>
-          </div>
-        </div>
+        <ClusterDossier
+          cluster={inspect}
+          isFocused={sel?.id === inspect.id}
+          onClose={() => setInspect(null)}
+        />
       )}
     </div>
   );

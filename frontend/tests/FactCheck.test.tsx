@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { FactCheck } from '../src/components/FactCheck';
 
@@ -36,6 +36,7 @@ vi.mock('../src/api/client', () => ({
       // /verdicts list endpoint
       return { total: 1, items: [verdictRow] };
     }),
+    post: vi.fn(async () => ({ status: 'recorded', claim_id: 'x', vote: 'AGREE' })),
   },
 }));
 
@@ -49,7 +50,9 @@ const renderFactCheck = () => {
 };
 
 describe('<FactCheck/> — Verdict Engine surface', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
 
   it('renders a SUPPORTED verdict with its probability and outlet', async () => {
     renderFactCheck();
@@ -70,5 +73,19 @@ describe('<FactCheck/> — Verdict Engine surface', () => {
     (apiClient.get as ReturnType<typeof vi.fn>).mockImplementationOnce(async () => ({ total: 0, items: [] }));
     renderFactCheck();
     expect(await screen.findByText(/No verdicts yet/i)).toBeTruthy();
+  });
+
+  it('records human feedback from the evidence drawer', async () => {
+    renderFactCheck();
+    fireEvent.click(await screen.findByText(/Global average temperature rose/i));
+    const agree = await screen.findByRole('button', { name: /^AGREE$/i });
+    fireEvent.click(agree);
+    expect(await screen.findByText(/Vote recorded/i)).toBeTruthy();
+    const { apiClient } = await import('../src/api/client');
+    expect(apiClient.post).toHaveBeenCalledWith('/verdicts/feedback', {
+      claim_id: '11111111-1111-1111-1111-111111111111',
+      vote: 'AGREE',
+      corrected_verdict: null,
+    });
   });
 });

@@ -41,7 +41,7 @@ export const LiveAuditFeed: React.FC = () => {
           </span>
         </div>
 
-        <div className="bg-hermes-panel-deep p-3 font-mono text-xs max-h-72 overflow-y-auto space-y-0.5">
+        <div className="bg-hermes-panel-deep p-3 font-mono text-xs max-h-72 overflow-y-auto scroll-contained space-y-0.5">
           {recent.isLoading && [...Array(8)].map((_, i) => (
             <div key={i} className="shimmer h-7 mb-1" />
           ))}

@@ -1,4 +1,5 @@
-import React from 'react';
+import React, { useMemo } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import {
   ArrowRight,
   Database,
@@ -9,6 +10,7 @@ import {
   GitBranch,
   ShieldCheck,
 } from 'lucide-react';
+import { fetchDashboard } from '../api/dashboard';
 import { AsciiGlobe } from '../components/AsciiGlobe';
 import { AsciiTicker } from '../components/AsciiTicker';
 import { AsciiReveal } from '../components/AsciiReveal';
@@ -23,16 +25,16 @@ import { LiveAuditFeed } from '../components/LiveAuditFeed';
 
 /* -------------------------------- data -------------------------------- */
 
-const HERO_STATS = [
-  { k: '148,920', label: 'claims indexed' },
-  { k: '42,118', label: 'graph nodes' },
-  { k: '137,540', label: 'propagation edges' },
+const DEFAULT_HERO_STATS = [
+  { k: '10,000+', label: 'claims indexed' },
+  { k: '27,132', label: 'graph nodes' },
+  { k: '80,107', label: 'propagation edges' },
   { k: '3 / 3', label: 'live services' },
 ];
 
 const TICKER_ITEMS = [
   'CLAIM MUTATIONS TRACED IN REAL TIME',
-  'PGVECTOR · HNSW · 1024-D EMBEDDINGS',
+  'PGVECTOR · HNSW · 768-D EMBEDDINGS',
   'NEO4J PROPAGATION TOPOLOGY',
   'APPEND-ONLY AUDIT STREAM',
   'REDIS-METERED INGEST QUEUE',
@@ -42,8 +44,8 @@ const CAPABILITIES = [
   {
     icon: Database,
     title: 'Semantic Vector Search',
-    body: 'Every claim embedded with bge-m3 into pgvector. Nearest-neighbor cosine search surfaces mutating variants of a narrative across millions of documents.',
-    meta: 'PGVECTOR · HNSW · 1024-D',
+    body: 'Every claim embedded with all-mpnet-base-v2 into pgvector. Nearest-neighbor cosine search surfaces mutating variants of a narrative across millions of documents.',
+    meta: 'PGVECTOR · HNSW · 768-D',
   },
   {
     icon: Network,
@@ -84,6 +86,52 @@ const STEPS = [
 ];
 
 export const Landing: React.FC = () => {
+  const { data: snapshot } = useQuery({
+    queryKey: ['landing-dashboard-summary'],
+    queryFn: fetchDashboard,
+    refetchInterval: 30_000,
+    staleTime: 15_000,
+  });
+
+  const heroStats = useMemo(() => {
+    if (!snapshot) return DEFAULT_HERO_STATS;
+
+    const claimsCount = snapshot.claims_total ?? snapshot.embedded_claims;
+    const claimsFormatted =
+      typeof claimsCount === 'number' && claimsCount > 0
+        ? claimsCount.toLocaleString()
+        : DEFAULT_HERO_STATS[0].k;
+
+    const graphNodesCount = snapshot.graph?.nodes
+      ? Object.values(snapshot.graph.nodes).reduce((acc, curr) => acc + curr, 0)
+      : null;
+    const graphNodesFormatted =
+      typeof graphNodesCount === 'number' && graphNodesCount > 0
+        ? graphNodesCount.toLocaleString()
+        : DEFAULT_HERO_STATS[1].k;
+
+    const edgesCount = snapshot.graph?.relationships;
+    const edgesFormatted =
+      typeof edgesCount === 'number' && edgesCount > 0
+        ? edgesCount.toLocaleString()
+        : DEFAULT_HERO_STATS[2].k;
+
+    const services = snapshot.services;
+    const liveCount = services
+      ? [services.postgres, services.neo4j, services.redis].filter(
+          (s) => s === 'ok'
+        ).length
+      : 3;
+    const servicesFormatted = `${liveCount} / 3`;
+
+    return [
+      { k: claimsFormatted, label: 'claims indexed' },
+      { k: graphNodesFormatted, label: 'graph nodes' },
+      { k: edgesFormatted, label: 'propagation edges' },
+      { k: servicesFormatted, label: 'live services' },
+    ];
+  }, [snapshot]);
+
   return (
     <div className="min-h-screen flex flex-col relative">
       {/* Paper grain */}
@@ -154,7 +202,7 @@ export const Landing: React.FC = () => {
         {/* Stats strip */}
         <div className="border-t border-hermes-bone/15">
           <div className="max-w-7xl mx-auto px-4 md:px-8 py-4 grid grid-cols-2 md:grid-cols-4 gap-4">
-            {HERO_STATS.map((s) => (
+            {heroStats.map((s) => (
               <div key={s.label} className="flex flex-col">
                 <span className="font-display text-2xl md:text-3xl tabular-nums">
                   {s.k}
@@ -172,7 +220,7 @@ export const Landing: React.FC = () => {
       <div
         className="relative z-10 border-b border-hermes-ink/90 bg-hermes-paper py-2.5 font-mono text-[11px] font-bold uppercase tracking-[0.18em] text-hermes-ink/80"
       >
-        <AsciiTicker items={TICKER_ITEMS} speed={45} />
+        <AsciiTicker items={TICKER_ITEMS} speed={10} />
       </div>
 
       {/* ------------------------------- About -------------------------------- */}

@@ -12,6 +12,7 @@ import {
   Landmark,
 } from 'lucide-react';
 import { apiClient } from '../api/client';
+import { extrasApi } from '../api/extras';
 
 /**
  * FactCheck — the Verdict Engine surface.
@@ -98,6 +99,75 @@ const VerdictCard: React.FC<{ row: VerdictRow; onOpen: () => void }> = ({ row, o
   );
 };
 
+const FeedbackButtons: React.FC<{ claimId: string; engineBand: string }> = ({
+  claimId,
+  engineBand,
+}) => {
+  const [status, setStatus] = useState<'idle' | 'sending' | 'done' | 'error'>('idle');
+  const [corrected, setCorrected] = useState('');
+
+  const send = async (vote: 'AGREE' | 'DISAGREE') => {
+    setStatus('sending');
+    try {
+      await extrasApi.feedback(claimId, vote, vote === 'DISAGREE' && corrected ? corrected : null);
+      setStatus('done');
+    } catch {
+      setStatus('error');
+    }
+  };
+
+  if (status === 'done') {
+    return (
+      <div className="border border-emerald-400/30 bg-emerald-400/5 p-4 font-mono text-[10px] uppercase tracking-widest text-emerald-400">
+        Vote recorded — it feeds the engine's calibration loop
+      </div>
+    );
+  }
+
+  return (
+    <div className="border border-hermes-bone/15 bg-hermes-panel-deep p-4">
+      <div className="font-mono text-[10px] uppercase tracking-widest text-hermes-bone/45 mb-2">
+        Human review · one vote per visitor (pseudonymous)
+      </div>
+      <div className="flex items-center gap-2 flex-wrap">
+        <button
+          onClick={() => void send('AGREE')}
+          disabled={status === 'sending'}
+          className="btn-ghost-brutal !text-emerald-300 !border-emerald-400/40"
+        >
+          <ShieldCheck className="w-3.5 h-3.5 inline mr-1" />
+          AGREE
+        </button>
+        <button
+          onClick={() => void send('DISAGREE')}
+          disabled={status === 'sending'}
+          className="btn-ghost-brutal !text-hermes-red-bright !border-hermes-red-bright/40"
+        >
+          <AlertOctagon className="w-3.5 h-3.5 inline mr-1" />
+          DISAGREE
+        </button>
+        <select
+          value={corrected}
+          onChange={(e) => setCorrected(e.target.value)}
+          className="bg-ink border border-hermes-bone/20 font-mono text-[10px] px-2 py-1.5 text-hermes-bone/80"
+        >
+          <option value="">if disagree: correct band…</option>
+          {Object.keys(BAND_STYLE)
+            .filter((b) => b !== engineBand)
+            .map((b) => (
+              <option key={b} value={b}>
+                {b}
+              </option>
+            ))}
+        </select>
+        {status === 'error' && (
+          <span className="font-mono text-[10px] text-hermes-red-bright">failed — try again</span>
+        )}
+      </div>
+    </div>
+  );
+};
+
 const EvidenceDrawer: React.FC<{ detail: VerdictDetail; onClose: () => void }> = ({ detail, onClose }) => {
   const ev = detail.verdict_evidence ?? {};
   const neighbors = ev.checked_neighbors ?? [];
@@ -113,7 +183,7 @@ const EvidenceDrawer: React.FC<{ detail: VerdictDetail; onClose: () => void }> =
   return (
     <div className="fixed inset-0 z-50 flex justify-end bg-black/60 backdrop-blur-sm" onClick={onClose}>
       <div
-        className="w-full max-w-2xl h-full overflow-y-auto bg-hermes-panel border-l border-hermes-bone/20 p-6 space-y-6"
+        className="w-full max-w-2xl h-full overflow-y-auto scroll-contained bg-hermes-panel border-l border-hermes-bone/20 p-6 space-y-6"
         onClick={(e) => e.stopPropagation()}
       >
         {/* header */}
@@ -137,6 +207,9 @@ const EvidenceDrawer: React.FC<{ detail: VerdictDetail; onClose: () => void }> =
             {detail.article_title?.slice(0, 70)}… <ExternalLink className="w-3 h-3" />
           </a>
         </div>
+
+        {/* human feedback */}
+        <FeedbackButtons claimId={detail.id} engineBand={detail.verdict} />
 
         {/* rationale */}
         {detail.verdict_rationale && (

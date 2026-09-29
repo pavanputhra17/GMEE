@@ -7,9 +7,11 @@ import { MetricCard } from '../components/MetricCard';
 import { GraphVisualizer } from '../components/GraphVisualizer';
 import { VectorTelemetry } from '../components/VectorTelemetry';
 import { LiveAuditFeed } from '../components/LiveAuditFeed';
+import { EarlyWarning } from '../components/EarlyWarning';
 import { CacheTelemetry } from '../components/CacheTelemetry';
 import CorpusExplorer from '../components/CorpusExplorer';
 import { FactCheck } from '../components/FactCheck';
+import { EvalLab } from '../components/EvalLab';
 import FullCorpusGraph from '../components/FullCorpusGraph';
 import TimelineTunnel from '../components/TimelineTunnel';
 import MasalaLab from '../components/MasalaLab';
@@ -113,7 +115,7 @@ export const SystemHealth: React.FC = () => {
   const [refetchInterval, setRefetchInterval] = useState<number>(5000);
   const [activeTab, setActiveTab] = useState<TabType>(() => {
     const m = window.location.hash.match(/^#\/dashboard\/([a-z]+)$/);
-    const valid: TabType[] = ['overview', 'factcheck', 'fullgraph', 'timeline', 'masala', 'graph', 'vector', 'cache', 'corpus'];
+    const valid: TabType[] = ['overview', 'factcheck', 'fullgraph', 'timeline', 'masala', 'graph', 'vector', 'cache', 'corpus', 'eval'];
     return (m && valid.includes(m[1] as TabType) ? m[1] : 'overview') as TabType;
   });
 
@@ -200,7 +202,7 @@ export const SystemHealth: React.FC = () => {
   const healthScore = Math.round((servicesUp / 3) * 100);
 
   return (
-    <div className="min-h-screen flex flex-col items-center p-4 md:p-8 lg:p-12 relative bg-hermes-ink text-hermes-bone">
+    <div className="min-h-screen flex flex-col items-center p-4 pb-0 md:p-8 md:pb-0 lg:p-12 lg:pb-0 relative bg-hermes-ink text-hermes-bone overflow-x-clip">
       {/* Paper grain texture — Hermes signature */}
       <div className="fixed inset-0 z-0 pointer-events-none grain-overlay" />
 
@@ -341,8 +343,11 @@ export const SystemHealth: React.FC = () => {
                   />
                 </div>
 
+                {/* Early-warning board — persisted alerts + 24h spike snapshot */}
+                <EarlyWarning />
+
                 {/* Interactive Neo4j Topology Graph */}
-                <GraphVisualizer />
+                <GraphVisualizer setActiveTab={setActiveTab} />
 
                 {/* Postgres Vector Telemetry & Audit Stream */}
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
@@ -354,7 +359,7 @@ export const SystemHealth: React.FC = () => {
 
             {activeTab === 'graph' && (
               <div className="space-y-6">
-                <GraphVisualizer />
+                <GraphVisualizer setActiveTab={setActiveTab} />
                 <LiveAuditFeed />
               </div>
             )}
@@ -368,8 +373,9 @@ export const SystemHealth: React.FC = () => {
 
             {activeTab === 'timeline' && <TimelineTunnel />}
             {activeTab === 'masala' && <MasalaLab />}
-            {activeTab === 'fullgraph' && <FullCorpusGraph />}
+            {activeTab === 'fullgraph' && <FullCorpusGraph setActiveTab={setActiveTab} />}
             {activeTab === 'factcheck' && <FactCheck />}
+            {activeTab === 'eval' && <EvalLab />}
             {activeTab === 'corpus' && <CorpusExplorer />}
 
             {activeTab === 'cache' && (

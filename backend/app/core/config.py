@@ -41,6 +41,31 @@ class Settings(BaseSettings):
     SIMILAR_TO_THRESHOLD: float = 0.75
     BERTOPIC_MIN_TOPIC_SIZE: int = 5
 
+    # Verdict engine calibration
+    # Cosine-similarity window in which two claims are considered "the same
+    # assertion". The original hard-coded 0.75 floor proved too strict on real
+    # news corpora (cross-outlet paraphrases of one event typically sit at
+    # 0.55–0.75), collapsing ~95% of verdicts to UNSUPPORTED.
+    VERDICT_NEAR_MIN: float = 0.60
+    VERDICT_NEAR_MAX: float = 0.97
+
+    # Embedding model. Default: all-mpnet-base-v2 (768-dim, English).
+    # Cross-lingual lineage: set to paraphrase-multilingual-mpnet-base-v2
+    # (also 768-dim, 50+ languages) — a drop-in swap for existing vector
+    # columns. NOTE: changing the model after data exists requires
+    # re-embedding the whole corpus (scripts/embed_articles.py) or the
+    # vector spaces are incomparable.
+    EMBEDDING_MODEL: str = "all-mpnet-base-v2"
+
+    # Process model: run the APScheduler inside this process (dev / single
+    # node). Set to false for API-only replicas and run scripts/run_nlp_cycle.py
+    # as a separate process so heavy cycles never restart with the API.
+    ENABLE_SCHEDULER: bool = True
+
+    # Rate limiting. Disable in the test suite (tests share one IP and would
+    # trip the login limiter against each other / against dev usage).
+    RATE_LIMIT_ENABLED: bool = True
+
     @field_validator("JWT_SECRET")
     @classmethod
     def validate_jwt_secret(cls, v: str) -> str:

@@ -58,5 +58,22 @@ tsconfig.tsbuildinfo
 *.tsbuildinfo
 dataaa/
 
+# The Python-oriented `lib/` rule above matches ANY directory named lib,
+# including frontend/src/lib — which silently kept `src/lib/sound.ts` out of
+# the repository and left clones unable to build the dashboard. Re-include it.
+!frontend/src/lib/
+
 # Test coverage output
 coverage/
+
+# Local run artifacts — dev server / pipeline logs and the endpoint
+# verification report (regenerate with verify_endpoints.ps1). No .log file
+# is tracked in this repo, so this only hides run litter.
+*.log
+_endpoint_report.txt
+_scroll_*.mjs
+_ui_sweep*
+_hub.txt
+backend/_backup/
+backend/eval_report.json
+

@@ -1,4 +1,3 @@
-#test comment
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -6,13 +5,16 @@ from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1 import (
+    alerts,
     auth,
     collection,
     corpus,
     dashboard,
+    eval,
     evolution,
     graph,
     health,
+    lineage,
     nlp,
     preprocessing,
     verdicts,
@@ -31,11 +33,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     EntityExtractor.load_model()
     EmbeddingService.load_model()
     # Startup
+    settings = get_settings()
     await seed_sources()
-    scheduler.start_scheduler()
+    if settings.ENABLE_SCHEDULER:
+        scheduler.start_scheduler()
     yield
     # Shutdown
-    scheduler.stop_scheduler()
+    if settings.ENABLE_SCHEDULER:
+        scheduler.stop_scheduler()
 
 def create_app() -> FastAPI:
     settings = get_settings()
@@ -63,6 +68,9 @@ def create_app() -> FastAPI:
     api_router.include_router(corpus.router, prefix="/corpus", tags=["Corpus"])
     api_router.include_router(verdicts.router, prefix="/verdicts", tags=["Verdicts"])
     api_router.include_router(graph.router, prefix="/graph", tags=["Graph"])
+    api_router.include_router(lineage.router, prefix="/graph", tags=["Graph"])
+    api_router.include_router(alerts.router, prefix="/alerts", tags=["Alerts"])
+    api_router.include_router(eval.router, prefix="/eval", tags=["Evaluation"])
 
     app.include_router(api_router, prefix="/api/v1")
 

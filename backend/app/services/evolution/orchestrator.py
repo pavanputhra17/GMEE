@@ -9,7 +9,7 @@ from sqlalchemy.orm import selectinload
 from app.core.config import get_settings
 from app.models.article import Article
 from app.models.claim import Claim
-from app.models.evolution import ClaimClusterRun
+from app.models.evolution import ClaimClusterAssignment, ClaimClusterRun
 from app.models.source import Source
 from app.services.evolution.cluster_service import ClusterService
 from app.services.evolution.mutation_detector import MutationDetector
@@ -85,8 +85,17 @@ class EvolutionOrchestrator:
             return {"status": "error", "error": "BERTopic dependencies missing"}
 
         # 4. Mutation Detection
-        # Fetch the assignments just created in the current transaction
-        assignments = cluster_run.assignments
+        # Fetch the assignments just created in the current transaction with an
+        # explicit awaited SELECT: touching the lazy `cluster_run.assignments`
+        # collection here would emit IO outside the async greenlet context and
+        # raise sqlalchemy.exc.MissingGreenlet.
+        assignments = (
+            await db.execute(
+                select(ClaimClusterAssignment).where(
+                    ClaimClusterAssignment.cluster_run_id == cluster_run.id
+                )
+            )
+        ).scalars().all()
         relationships = await self.mutation_detector.run_mutation_detection(
             db, assignments, claims_by_id, articles_by_id
         )

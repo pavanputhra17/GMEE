@@ -1,6 +1,6 @@
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import cast
+from typing import Any, NamedTuple, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -18,6 +18,53 @@ from app.models.source import Source
 from app.services.evolution.mutation_detector import MutationDetector
 from app.services.evolution.neo4j_writer import Neo4jWriter
 from app.services.evolution.orchestrator import EvolutionOrchestrator
+
+
+def _result(rows: list[Any]) -> MagicMock:
+    """Fake SQLAlchemy Result whose .scalars().all() returns ``rows``."""
+    res = MagicMock()
+    res.scalars.return_value.all.return_value = rows
+    return res
+
+
+class _MutationFixture(NamedTuple):
+    c0: Claim
+    c1: Claim
+    c2: Claim
+    c3: Claim
+    assignments: list[ClaimClusterAssignment]
+    claims_by_id: dict[uuid.UUID, Claim]
+    articles_by_id: dict[uuid.UUID, Article]
+
+
+def _mutation_fixtures() -> _MutationFixture:
+    """One topic, four temporally ordered claims (see the threshold test).
+
+    c1 vs c0 ≈ 0.994 and c2 vs c1 ≈ 0.861 clear the 0.85 EVOLVED_FROM bar;
+    c2 vs c0 ≈ 0.80 lands in the SIMILAR_TO window; c3 matches nothing.
+    """
+    t0 = datetime.now(UTC) - timedelta(days=2)
+    t1 = datetime.now(UTC) - timedelta(days=1)
+
+    art0 = Article(id=uuid.uuid4(), published_at=t0)
+    art1 = Article(id=uuid.uuid4(), published_at=t1)
+
+    c0 = Claim(id=uuid.uuid4(), article_id=art0.id, extracted_at=t0, embedding=[1.0, 0.0, 0.0])
+    c1 = Claim(id=uuid.uuid4(), article_id=art1.id, extracted_at=t1, embedding=[0.9, 0.1, 0.0])
+    c2 = Claim(id=uuid.uuid4(), article_id=art1.id, extracted_at=t1, embedding=[0.8, 0.6, 0.0])
+    c3 = Claim(id=uuid.uuid4(), article_id=art1.id, extracted_at=t1, embedding=[0.0, 1.0, 0.0])
+
+    assignments = [
+        ClaimClusterAssignment(claim_id=c0.id, topic_id=1),
+        ClaimClusterAssignment(claim_id=c1.id, topic_id=1),
+        ClaimClusterAssignment(claim_id=c2.id, topic_id=1),
+        ClaimClusterAssignment(claim_id=c3.id, topic_id=1),
+    ]
+    claims_by_id = {c.id: c for c in (c0, c1, c2, c3)}
+    articles_by_id = {a.id: a for a in (art0, art1)}
+    return _MutationFixture(
+        c0, c1, c2, c3, assignments, claims_by_id, articles_by_id
+    )
 
 
 @pytest.mark.asyncio
@@ -56,7 +103,13 @@ async def test_orchestrator_guards():
     art_result.scalars.return_value.all.return_value = []
     src_result = MagicMock()
     src_result.scalars.return_value.all.return_value = []
-    mock_db.execute = AsyncMock(side_effect=[exec_result, art_result, src_result])
+    # 4th execute: orchestrator fetches cluster assignments with an explicit
+    # awaited SELECT (never the lazy collection — that raises MissingGreenlet).
+    assign_result = MagicMock()
+    assign_result.scalars.return_value.all.return_value = []
+    mock_db.execute = AsyncMock(
+        side_effect=[exec_result, art_result, src_result, assign_result]
+    )
     with patch.object(orchestrator, 'cluster_service') as mock_cluster, \
          patch.object(orchestrator, 'mutation_detector') as mock_mutation, \
          patch.object(orchestrator, 'neo4j_writer') as mock_neo4j:
@@ -81,8 +134,9 @@ async def test_mutation_detector_logic():
 
     detector = MutationDetector()
     mock_db = AsyncMock()
-
-    # Create dummy data
+    # No persisted edges yet: the detector pre-loads existing rows to upsert.
+    mock_db.execute = AsyncMock(return_value=_result([]))
+    mock_db.add_all = MagicMock()
     t0 = datetime.now(UTC) - timedelta(days=2)
     t1 = datetime.now(UTC) - timedelta(days=1)
     
@@ -183,7 +237,12 @@ async def test_orchestrator_resilience_to_neo4j_failure():
     art_result.scalars.return_value.all.return_value = []
     src_result = MagicMock()
     src_result.scalars.return_value.all.return_value = []
-    mock_db.execute = AsyncMock(side_effect=[exec_result, art_result, src_result])
+    # 4th execute: explicit assignments SELECT (see orchestrator step 4).
+    assign_result = MagicMock()
+    assign_result.scalars.return_value.all.return_value = []
+    mock_db.execute = AsyncMock(
+        side_effect=[exec_result, art_result, src_result, assign_result]
+    )
 
     with patch.object(orchestrator, 'cluster_service') as mock_cluster, \
          patch.object(orchestrator, 'mutation_detector') as mock_mutation, \
@@ -206,3 +265,80 @@ async def test_orchestrator_resilience_to_neo4j_failure():
         
         # Ensure Postgres transaction was committed
         mock_db.commit.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_mutation_detector_upserts_existing_edges():
+    """A re-run refreshes stored edges in place instead of duplicating them."""
+    settings = get_settings()
+    settings.EVOLUTION_SIMILARITY_THRESHOLD = 0.85
+    settings.SIMILAR_TO_THRESHOLD = 0.75
+
+    fx = _mutation_fixtures()
+    detector = MutationDetector()
+    mock_db = AsyncMock()
+    mock_db.add_all = MagicMock()
+
+    persisted = ClaimRelationship(
+        from_claim_id=fx.c1.id,
+        to_claim_id=fx.c0.id,
+        relationship_type=RelationshipTypeEnum.EVOLVED_FROM,
+        score=0.10,  # stale score from an earlier run
+    )
+    mock_db.execute = AsyncMock(return_value=_result([persisted]))
+
+    relationships = await detector.run_mutation_detection(
+        mock_db, fx.assignments, fx.claims_by_id, fx.articles_by_id
+    )
+
+    added = mock_db.add_all.call_args[0][0]
+    added_keys = {
+        (r.from_claim_id, r.to_claim_id, r.relationship_type) for r in added
+    }
+    # the persisted edge is refreshed, never re-inserted
+    assert (fx.c1.id, fx.c0.id, RelationshipTypeEnum.EVOLVED_FROM) not in added_keys
+    assert {
+        (fx.c2.id, fx.c1.id, RelationshipTypeEnum.EVOLVED_FROM),
+        (fx.c2.id, fx.c0.id, RelationshipTypeEnum.SIMILAR_TO),
+    } <= added_keys
+    assert persisted.score > 0.9  # ~0.994 refreshed in place
+    mock_db.delete.assert_not_awaited()
+    assert len(relationships) == 3
+
+
+@pytest.mark.asyncio
+async def test_mutation_detector_prunes_stale_evolved_from():
+    """An EVOLVED_FROM edge the run no longer reproduces is pruned."""
+    settings = get_settings()
+    settings.EVOLUTION_SIMILARITY_THRESHOLD = 0.85
+    settings.SIMILAR_TO_THRESHOLD = 0.75
+
+    fx = _mutation_fixtures()
+    detector = MutationDetector()
+    mock_db = AsyncMock()
+    mock_db.add_all = MagicMock()
+
+    # c2's predecessor is now c1 (≈0.861), so the old c2→c0 EVOLVED_FROM edge
+    # is stale; the same pair remains valid as SIMILAR_TO (≈0.80).
+    stale = ClaimRelationship(
+        from_claim_id=fx.c2.id,
+        to_claim_id=fx.c0.id,
+        relationship_type=RelationshipTypeEnum.EVOLVED_FROM,
+        score=0.90,
+    )
+    mock_db.execute = AsyncMock(return_value=_result([stale]))
+
+    await detector.run_mutation_detection(
+        mock_db, fx.assignments, fx.claims_by_id, fx.articles_by_id
+    )
+
+    deleted = [call.args[0] for call in mock_db.delete.await_args_list]
+    assert deleted == [stale]
+
+    added = mock_db.add_all.call_args[0][0]
+    assert any(
+        r.relationship_type == RelationshipTypeEnum.SIMILAR_TO
+        and r.from_claim_id == fx.c2.id
+        and r.to_claim_id == fx.c0.id
+        for r in added
+    )

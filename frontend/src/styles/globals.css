@@ -127,6 +127,12 @@
     background-size: 32px 32px;
   }
 
+  /* Inner scroll areas: stop scroll chaining, so reaching the end of a list
+     never drags the page (and page scroll never leaks into the list). */
+  .scroll-contained {
+    overscroll-behavior: contain;
+  }
+
   /* Dark engineering grid — bone lines on ink wells */
   .grid-bg-dark {
     background-image:

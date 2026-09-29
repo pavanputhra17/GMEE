@@ -156,12 +156,15 @@ const AsciiEqualizer: React.FC<AsciiEqualizerProps> = ({
 
   void label;
 
+  // nowrap + overflow-hidden: the bar strip is decorative, so it clips to
+  // its band instead of widening the page (it used to add ~640px of
+  // horizontal scroll at phone widths).
   return (
     <div
       ref={hostRef}
       role="img"
       aria-label={label}
-      className={`font-mono leading-none tracking-[0.1em] select-none ${className ?? ''}`}
+      className={`font-mono leading-none tracking-[0.1em] select-none whitespace-nowrap overflow-hidden ${className ?? ''}`}
     />
   );
 };

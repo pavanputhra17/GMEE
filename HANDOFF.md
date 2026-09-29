@@ -1,7 +1,90 @@
 # GMEE Session Handoff — Start Here
 
 > **For the next agent/session:** This file captures the full state of an in-progress
-> "make GMEE 10/10" campaign. Read it fully before touching anything. Last updated: 2026-08-24.
+> "make GMEE 10/10" campaign. Read it fully before touching anything. Last updated: 2026-09-20.
+
+## 🟢 2026-09-20 session — dev servers up · alerts surfaced · claims graph fixed
+
+**Vertical scroll overshoot (latest):** fixed and probe-verified. The dashboard
+could scroll past its content into blank space (AsciiEqualizer glyph strip
+overflow at phone widths, wheel-hijacking canvases, scroll chaining). All 10
+dashboard tabs now measure **0px** blank-below-content and 0px overflow-X at
+1440x900 / 1920x1080 / 390x844 via
+`node _scroll_probe.mjs http://localhost:5050/#/dashboard --wait=7000`
+(PROBLEM lines: 0, exit 0). The probe doubles as a gate: it exits **1** when any
+tab shows >40px blank-below-content, >8px overflow-X, or a failed probe
+expression, and prints a final `PROBE RESULT:` line. If you touch page chrome,
+re-run that probe; its metrics
+are capped at `scrollHeight − clientHeight`, so tabs shorter than one viewport
+don't report phantom gaps.
+
+**Graph → focused timeline (latest):** "View in Timeline" in either graph view
+now drills the tunnel into that story only (`/graph/timeline?article_id=` —
+backend BFS ≤3 SIMILAR hops, `focused: true`). Rings run newest-first in both
+modes, so wheel/click dive reads back in time to the origin report. Gotchas
+learned the hard way: (1) a stale zombie uvicorn was serving pre-edit code —
+if a live endpoint disagrees with the file, check what process actually owns
+:8000 (`python3.11`, not `python.exe`, hides from name filters); (2) Neo4j
+Cypher rejects `NULLS LAST` — null-last sorting must be
+`ORDER BY (x IS NULL) ASC, x DESC`. Cluster dossier was redesigned
+(`src/components/ClusterDossier.tsx`): similarity meters, lag/scoop badges vs
+the hub, coverage span. Tests: `tests/TimelineTunnel.test.tsx`,
+`tests/ClusterDossier.test.tsx`.
+
+**Everything below this block is the previous (2026-08-24) session log — kept for its pitfalls.**
+
+### Running right now (leave them up)
+| Thing | Where | Notes |
+|---|---|---|
+| Docker Desktop + datastores | `gmee_postgres` (55432) · `gmee_v2_neo4j` (7475 HTTP / 7688 bolt) · `gmee_redis` (6379) · `gmee_ollama` | compose stack auto-starts with Docker Desktop |
+| Backend (local venv, `--reload`) | `http://127.0.0.1:8000` | `.venv\Scripts\python.exe -m uvicorn app.main:create_app --factory --host 127.0.0.1 --port 8000 --reload`; logs → `backend/uvicorn_dev.log` / `uvicorn_dev_err.log` |
+| Frontend (vite dev) | `http://localhost:5050` | `npm run dev -- --port 5050 --strictPort`; logs → `frontend/vite_dev.log` |
+| Compose app replicas | `gmee_backend` / `gmee_frontend` **stopped on purpose** | they squatted 8000/3000 and shadowed the local dev servers; restart with `docker start` if you want the containerised pair instead |
+
+`GET /api/v1/health/ready` → `{"postgres":"ok","neo4j":"ok","redis":"ok","status":"ready"}`.
+Note: PowerShell's `Invoke-RestMethod` is *very* slow at reading big JSON bodies here —
+time endpoints with `curl.exe -w '%{time_total}'`, not PowerShell timings.
+
+### Verified this session (all green)
+- Backend `pytest tests/ -q` → **124 passed**; `ruff check app tests` → clean.
+- Frontend `npm run test` → **34 passed / 10 files**; `npm run lint` clean; `npm run build` green.
+- `verify_endpoints.ps1` → all eval/alerts/lineage/simulate/feedback routes OK.
+- `_ui_sweep.ps1` (new) → **24 probes, 0 contract failures** — hits every endpoint the
+  React components call and asserts the response shape each TS interface declares, plus
+  a latency guard on `/graph/claims`.
+- DB migration head `f7d3e9b2c5a6` matches local Alembic head; `docs/openapi.json`
+  regenerated from the live app (45 paths).
+
+### Changed this session
+1. **Persistent alerts were unreachable** — `evaluate_alerts()` + the `alerts` table
+   (migration `e8c2f4a6b1d3`) had no caller anywhere. Added to `app/api/v1/alerts.py`:
+   `GET /alerts/feed` (kind/severity/ack filters + unacknowledged tallies),
+   `POST /alerts/evaluate` (admin), `POST /alerts/{id}/acknowledge` (admin, idempotent);
+   rate-limit entry for the trigger; `Alert`/`FeedbackVerdict` exported from `models/__init__`.
+   Covered by `backend/tests/test_alerts_feed.py` (6 tests, SQLite-safe).
+2. **Frontend never consumed `/alerts`** — new `src/api/alerts.ts` + `EarlyWarning.tsx`
+   board mounted on the Overview tab (persisted alerts + 24h spike snapshot + counters),
+   `tests/EarlyWarning.test.tsx` (3 tests).
+3. **`/graph/claims` was O(N²)** — a claims×claims cross join with a cosine filter ran
+   ~20M distance computations (~105 s per request) while the UI polls it every 60 s.
+   Now reads persisted `claim_relationships` edges with a bounded HNSW KNN `LATERAL`
+   fallback; response reports `edge_source`. Warm latency ~0.09 s.
+4. Docs: `docs/API.md` gained corpus/verdicts/graph/alerts/eval sections; CHANGELOG updated.
+
+### Still open (next best work)
+- Eval gold set: 761 blinded pairs exist (10 labeled / 13 votes after this
+  session's probes). Contributors label them in-app — the **Eval Lab** tab
+  (`#/dashboard/eval`) serves pairs with keyboard voting, or
+  `python scripts/run_eval.py` prints AUROC + F1 metrics from the same blinded
+  votes. Note `run_eval.py` was broken until this session (joined `articles`
+  for embeddings that live on `claims`, crashed on `consensus`'s first row,
+  fed pgvector strings into numpy); the ui-sweep probe labels one extra pair
+  per run, so coverage grows with every sweep
+- No admin token is wired into the sweep, so `POST /alerts/evaluate` and
+  `POST /alerts/{id}/acknowledge` are only covered by pytest (auth gate + 404 paths);
+  a seeded admin user would let `_ui_sweep.ps1` exercise the happy path live.
+- Uncommitted work from the previous session (eval/alerts/lineage/simulate/feedback) is
+  still uncommitted — see `git status`. Nothing has been pushed; **ask before pushing**.
 
 ## Context
 - **Project:** GMEE — Global Misinformation Evolution Engine. FastAPI async backend + React 18/TS/Vite/Tailwind frontend, Postgres+pgvector / Neo4j / Redis via Docker Compose.

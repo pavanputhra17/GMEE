@@ -57,7 +57,9 @@ services:
       context: ../backend
       dockerfile: Dockerfile
     container_name: gmee_backend
-    restart: always
+    # unless-stopped (not always): a manual `docker stop` must stay stopped, so
+    # the container does not squat :8000 on [::] and shadow the local dev server.
+    restart: unless-stopped
     ports:
       - "8000:8000"
     env_file:
@@ -77,7 +79,8 @@ services:
       context: ../frontend
       dockerfile: Dockerfile
     container_name: gmee_frontend
-    restart: always
+    # Unless-stopped for the same reason as the backend above.
+    restart: unless-stopped
     ports:
       - "3000:3000"
     env_file:

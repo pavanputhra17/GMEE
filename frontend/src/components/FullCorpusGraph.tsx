@@ -1,7 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Network, ExternalLink, Layers, Zap, Search, RotateCcw } from 'lucide-react';
+import { Network, ExternalLink, Layers, Zap, Search, RotateCcw, Orbit } from 'lucide-react';
 import { graphApi, FullGraph, GraphNode } from '../api/graph';
+import { setSelectedArticle } from '../lib/useSelectedArticle';
+import type { TabType } from './Header';
 
 /**
  * FullCorpusGraph — THE ENTIRE corpus as one interactive force-directed graph.
@@ -10,7 +12,7 @@ import { graphApi, FullGraph, GraphNode } from '../api/graph';
  * sim: repulsion via spatial grid, spring edges, centering. 120Hz-capable
  * stepping with calm damping per GMEE motion rules.
  *
- * Interactions: drag nodes · pan canvas · wheel zoom · click to inspect ·
+ * Interactions: drag nodes · pan canvas · ctrl/⌘+wheel zoom · click to inspect ·
  * outlet filter · search highlight.
  */
 
@@ -51,7 +53,7 @@ function buildSim(graph: FullGraph): { nodes: SimNode[]; index: Map<string, SimN
   return { nodes, index };
 }
 
-const FullCorpusGraph: React.FC = () => {
+const FullCorpusGraph: React.FC<{ setActiveTab?: (tab: TabType) => void }> = ({ setActiveTab }) => {
   const [mode, setMode] = useState<'articles' | 'claims'>('articles');
   const [selected, setSelected] = useState<SimNode | null>(null);
   const [outletFilter, setOutletFilter] = useState<string>('');
@@ -327,11 +329,21 @@ const FullCorpusGraph: React.FC = () => {
     setSelected(n);
   };
 
-  const onWheel = (e: React.WheelEvent) => {
-    e.preventDefault();
-    const v = viewRef.current;
-    v.scale = Math.min(4, Math.max(0.25, v.scale * (e.deltaY < 0 ? 1.12 : 0.89)));
-  };
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return;
+    const handleNativeWheel = (e: WheelEvent) => {
+      // Plain wheel belongs to the page: the corpus canvas sits in a long
+      // scrolling tab, so it must not fight vertical scroll. Zoom is
+      // an explicit gesture: ctrl/⌘ + wheel, exactly like map embeds.
+      if (!e.ctrlKey && !e.metaKey) return;
+      e.preventDefault();
+      const v = viewRef.current;
+      v.scale = Math.min(4, Math.max(0.25, v.scale * (e.deltaY < 0 ? 1.12 : 0.89)));
+    };
+    el.addEventListener('wheel', handleNativeWheel, { passive: false });
+    return () => el.removeEventListener('wheel', handleNativeWheel);
+  }, []);
 
   const resetView = () => {
     viewRef.current = { ox: 0, oy: 0, scale: 1 };
@@ -355,7 +367,7 @@ const FullCorpusGraph: React.FC = () => {
             )}
           </div>
           <p className="text-xs font-mono text-hermes-bone/55 uppercase tracking-wider">
-            every node is real · drag · pan · scroll-zoom · click inspect
+            every node is real · drag · pan · ctrl+scroll zoom · click inspect
           </p>
         </div>
 
@@ -424,7 +436,6 @@ const FullCorpusGraph: React.FC = () => {
         onMouseUp={onMouseUp}
         onMouseLeave={onMouseUp}
         onClick={onClick}
-        onWheel={onWheel}
       >
         {g.isLoading ? (
           <div className="shimmer h-full w-full" />
@@ -464,11 +475,26 @@ const FullCorpusGraph: React.FC = () => {
               {selected.domain?.replace('www.', '')}
             </span>
           </div>
-          {selected.url && (
-            <a href={selected.url} target="_blank" rel="noreferrer" className="btn-brutal shrink-0">
-              Read original <ExternalLink className="w-3.5 h-3.5" />
-            </a>
-          )}
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              onClick={() => {
+                setSelectedArticle({
+                  id: selected.id,
+                  title: selected.title,
+                  domain: selected.domain,
+                });
+                setActiveTab?.('timeline');
+              }}
+              className="btn-brutal shrink-0"
+            >
+              View in Timeline <Orbit className="w-3.5 h-3.5" />
+            </button>
+            {selected.url && (
+              <a href={selected.url} target="_blank" rel="noreferrer" className="btn-ghost-brutal shrink-0 !text-hermes-bone !border-hermes-bone/30">
+                Read original <ExternalLink className="w-3.5 h-3.5" />
+              </a>
+            )}
+          </div>
         </div>
       )}
     </div>

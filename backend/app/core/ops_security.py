@@ -15,12 +15,13 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request, status
+from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse, Response
 from redis.asyncio import Redis
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.db.redis_client import redis_client as _redis_singleton
 
 logger = logging.getLogger(__name__)
@@ -37,6 +38,7 @@ SENSITIVE_LIMITS: dict[str, tuple[int, int]] = {
     "/api/v1/nlp/trigger": (4, 60),
     "/api/v1/evolution/trigger": (4, 60),
     "/api/v1/collection/trigger": (6, 60),
+    "/api/v1/alerts/evaluate": (4, 60),
 }
 
 
@@ -68,6 +70,8 @@ async def rate_limit_middleware(
     request: Request,
     call_next: Callable[[Request], Awaitable[Response]],
 ) -> Response | JSONResponse:
+    if not get_settings().RATE_LIMIT_ENABLED:
+        return await call_next(request)
     limit, window = _limit_for(request.url.path)
     ip_hash = hashlib.sha256(_client_ip(request).encode()).hexdigest()[:16]
     bucket = f"ratelimit:{ip_hash}:{request.url.path}:{int(time.time() // window)}"
@@ -80,9 +84,13 @@ async def rate_limit_middleware(
         return await call_next(request)
 
     if not allowed:
-        raise HTTPException(
+        # IMPORTANT: return the response, do NOT raise HTTPException here.
+        # This runs inside @app.middleware("http"), which sits OUTSIDE the
+        # exception-handling middleware — a raised HTTPException would bubble
+        # up as an unhandled 500 instead of a 429.
+        return JSONResponse(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="Rate limit exceeded. Slow down.",
+            content={"detail": "Rate limit exceeded. Slow down."},
             headers={"Retry-After": str(window)},
         )
 

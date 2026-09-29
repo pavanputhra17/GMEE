@@ -45,7 +45,7 @@ class FakeAudioContext {
     Object.assign(f, { type: 'lowpass', frequency: new FakeAudioParam() });
     return f;
   }
-  createBuffer(_ch: number, len: number, _rate: number) {
+  createBuffer(_ch: number, len: number) {
     return { getChannelData: () => new Float32Array(len) };
   }
 }
@@ -54,8 +54,7 @@ describe('lib/sound', () => {
   let sound: typeof import('../src/lib/sound').sound;
 
   beforeAll(async () => {
-    (window as unknown as { AudioContext: typeof FakeAudioContext }).AudioContext =
-      FakeAudioContext as unknown as typeof AudioContext;
+    (window as unknown as { AudioContext: unknown }).AudioContext = FakeAudioContext;
     ({ sound } = await import('../src/lib/sound'));
   });
 

@@ -6,13 +6,16 @@ from fakeredis import FakeAsyncRedis
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-os.environ["POSTGRES_URL"] = "postgresql+asyncpg://postgres:postgres@localhost/test"
+os.environ.setdefault(
+    "POSTGRES_URL", "postgresql+asyncpg://postgres:postgres@localhost:5432/gmee"
+)
 os.environ["NEO4J_URI"] = "neo4j://localhost:7687"
 os.environ["NEO4J_USER"] = "test"
 os.environ["NEO4J_PASSWORD"] = "test"
 os.environ["REDIS_URL"] = "redis://localhost:6379/0"
 os.environ["CORS_ORIGINS"] = "http://localhost:3000"
 os.environ["JWT_SECRET"] = "super_secret_test_jwt_key_that_is_at_least_32_chars"
+os.environ["RATE_LIMIT_ENABLED"] = "false"
 
 # ---------------------------------------------------------------------------
 # Dialect compatibility: the models use Postgres-specific types (JSONB,

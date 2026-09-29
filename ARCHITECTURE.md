@@ -49,7 +49,7 @@ also be triggered manually via authenticated `POST …/trigger` endpoints.
 ### 3. NLP (`services/nlp/`, `nlp_orchestrator.py`)
 
 - `llm_client.py` extracts atomic factual claims from article text.
-- `embedding_service.py` embeds each claim (BGE-M3, 1024-d) into pgvector.
+- `embedding_service.py` embeds each claim (all-mpnet-base-v2, 768-d) into pgvector.
 - `entity_extractor.py` runs spaCy `en_core_web_sm` NER per claim.
 
 ### 4. Evolution (`services/evolution/`, `orchestrator.py`)

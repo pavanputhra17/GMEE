@@ -10,7 +10,7 @@ and maps that propagation in a graph database.
 | Frontend   | React 18 · TypeScript · Vite · Tailwind CSS |
 | Storage    | PostgreSQL 16 + pgvector · Neo4j 5 · Redis 7 |
 | Ingestion  | Reddit · NewsAPI · RSS collectors |
-| NLP        | BGE-M3 embeddings · spaCy NER · BERTopic clustering |
+| NLP        | all-mpnet-base-v2 embeddings · spaCy NER · BERTopic clustering |
 
 ## Quick Start
 
@@ -113,6 +113,9 @@ push; see `.github/workflows/`.
 
 - [`ARCHITECTURE.md`](ARCHITECTURE.md) — system design, data flow, service map
 - [`docs/API.md`](docs/API.md) — REST endpoint reference
+- [`docs/DATASET.md`](docs/DATASET.md) — dataset schemas, volumes, and ingestion pipelines
+- [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) — algorithmic boundaries, heuristics, and hardware constraints
+- [`backend/README.md`](backend/README.md) — backend local setup, testing, and evaluation guide
 - [`docs/openapi.json`](docs/openapi.json) — machine-generated OpenAPI 3.1 spec
 - [`CHANGELOG.md`](CHANGELOG.md) — notable changes
 

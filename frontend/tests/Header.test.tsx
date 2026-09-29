@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { Header } from '../src/components/Header';
-import type { TabType } from '../src/components/Header';
 
 const baseProps = {
   refetchInterval: 5000,
@@ -26,7 +25,7 @@ describe('<Header/> — dashboard chrome', () => {
   });
 
   it('activates tabs via setActiveTab callback', () => {
-    const setActive = vi.fn<(t: TabType) => void>();
+    const setActive = vi.fn();
     render(
       <Header {...baseProps} activeTab="overview" setActiveTab={setActive} status="ok" />,
     );

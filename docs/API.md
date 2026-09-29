@@ -55,7 +55,7 @@ Base URL: `http://localhost:8000/api/v1`
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | GET | `/nlp/status` | bearer | Claim extraction/embedding progress and model availability. |
-| POST | `/nlp/trigger` | admin | Extract claims (LLM), embed them (BGE-M3 → pgvector), extract entities (spaCy). |
+| POST | `/nlp/trigger` | admin | Extract claims (LLM), embed them (all-mpnet-base-v2 → pgvector), extract entities (spaCy). |
 
 ## Evolution — `evolution.py`
 
@@ -64,6 +64,57 @@ Base URL: `http://localhost:8000/api/v1`
 | GET | `/evolution/status` | bearer | Last clustering run, cluster count, relationship totals. |
 | GET | `/evolution/clusters` | bearer | Cluster listing with member claims for graph exploration. |
 | POST | `/evolution/trigger` | admin | Force an evolution cycle (`force=true` bypasses the debounce guard). Clusters topics, detects `EVOLVED_FROM` / `SIMILAR_TO` relationships, syncs to Neo4j. |
+
+## Corpus — `corpus.py`
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/corpus/stats` | public | Corpus totals: articles, embedded count, outlet count, date range, NLP status counts. |
+| GET | `/corpus/articles` | public | Paginated articles (`q`, `domain`, `limit`, `offset`) plus domain facet counts. |
+| GET | `/corpus/articles/recent` | public | Newest ingested articles — feeds the Live Ingest Stream panel. |
+| GET | `/corpus/search` | public | Semantic search: the query is embedded and matched against article vectors (pgvector). |
+| GET | `/corpus/graph/story-clusters` | public | Multi-outlet story clusters from the Neo4j SIMILAR graph, ranked by degree. |
+
+## Verdicts — `verdicts.py`
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/verdicts` | public | Paginated claim verdicts; `band=` narrows to one verdict band. |
+| GET | `/verdicts/stats` | public | Band distribution and per-outlet credibility table. |
+| GET | `/verdicts/summary` | public | Engine configuration (weights, band thresholds, pooling rule) and distribution. |
+| GET | `/verdicts/leaderboard` | public | Outlets ranked by credibility. |
+| GET | `/verdicts/game/mutations` | public | Mutation chains (≥ `min_versions` versions) for the Mutation DNA view. |
+| GET | `/verdicts/game/claim` | public | Random claim for the Fact-or-Fake arcade. |
+| GET | `/verdicts/{claim_id}` | public | Verdict detail: probability, rationale, evidence, checked neighbours, grounded entities. |
+| POST | `/verdicts/feedback` | public | Human vote `{claim_id, vote: AGREE\|DISAGREE, corrected_verdict?, comment?}` → 201 (upsert per client). |
+
+## Graph — `graph.py`, `lineage.py`
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/graph/full` | public | Article-level SIMILAR graph (Neo4j) with node/edge counts. |
+| GET | `/graph/claims` | public | Claim network. Edges come from persisted `claim_relationships`; a bounded pgvector KNN (`LATERAL`) is used only when the selected claims have no stored links — `edge_source` reports which path served the request. |
+| GET | `/graph/timeline` | public | Story clusters ordered **newest-first** for the 3D timeline tunnel (index 0 = latest development; diving deeper reads back in time to the original first report). With `?article_id=`, only clusters within 3 SIMILAR hops of that article are returned (`focused: true`) — the graph→timeline drill-down. |
+| GET | `/graph/scoops` | public | Multi-outlet scoop races: first publisher plus exact publish-time lag per outlet. |
+| GET | `/graph/simulate` | public | Cascade sandbox: `hub`, `p`, `max_depth` → deterministic reach, expected reach, `r_effective`. |
+| GET | `/graph/lineage/{claim_id}` | public | EVOLVED_FROM component around a claim as a time-ordered version chain with word-level typed diffs. `404` when the claim has no lineage, `400` for a bad UUID. |
+
+## Alerts — `alerts.py`
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/alerts` | public | Stateless 24h snapshot: ingestion / disputed / mutation spikes versus the previous day, plus the raw counters. Always answers, even on a cold corpus. |
+| GET | `/alerts/feed` | public | Persisted alerts from the `alerts` table (deduplicated on kind + subject). Filters: `limit`, `kind`, `severity`, `include_acknowledged`; returns unacknowledged tallies by severity and kind. |
+| POST | `/alerts/evaluate` | admin | Run one persistent evaluation pass (`window_hours` 1–48): corroboration, contradiction, mutation and cluster-burst detection with dedup upserts. |
+| POST | `/alerts/{alert_id}/acknowledge` | admin | Operator acknowledgement; idempotent — the first acknowledgement timestamp sticks. |
+
+## Evaluation — `eval.py`
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/eval/next` | public | Next unlabeled gold pair for `?annotator=` — **blinded**: only the two claim texts and their outlets are returned, never the similarity score, bucket or verdict. |
+| POST | `/eval/label` | public | Record (or update) a label `{pair_id, annotator, label: SAME_STORY\|EVOLVED\|DISTINCT}` → 201. Labeled in-app on the **Eval Lab** tab (`#/dashboard/eval`): blinded pair, keyboard votes (1/2/3), per-bucket coverage grid, Cohen's kappa chips. |
+| GET | `/eval/progress` | public | Labeling coverage per similarity bucket, per-annotator counts and Cohen's kappa between annotators over shared pairs. |
 
 ---
 

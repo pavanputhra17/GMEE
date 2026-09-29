@@ -40,6 +40,40 @@ export interface GameClaim {
   published_at: string | null;
 }
 
+export interface DiffSegment {
+  type: 'same' | 'changed';
+  old: string;
+  new: string;
+  kinds: string[];
+}
+
+export interface LineageDiff {
+  from_index: number;
+  to_index: number;
+  from_id: string;
+  to_id: string;
+  similarity: number;
+  mutation_types: string[];
+  numeric_changes: Array<{ removed: string; added: string }>;
+  entity_changes: Array<{ removed: string; added: string }>;
+  hedge_changes: Array<{ word: string; direction: string }>;
+  segments: DiffSegment[];
+}
+
+export interface MutationLineage {
+  root: string;
+  versions: MutationVersion[];
+  edges: Array<{ from: string; to: string; score: number }>;
+  diffs: LineageDiff[];
+  counts: { versions: number; edges: number; component_claims: number };
+}
+
+export interface FeedbackResult {
+  status: string;
+  claim_id: string;
+  vote: string;
+}
+
 export const extrasApi = {
   scoops: (limit = 10) =>
     apiClient.get(`/graph/scoops?limit=${limit}`) as Promise<{ races: ScoopRace[]; count: number }>,
@@ -48,4 +82,16 @@ export const extrasApi = {
       chains: MutationChain[];
     }>,
   gameClaim: () => apiClient.get('/verdicts/game/claim') as Promise<GameClaim>,
+  lineage: (claimId: string) =>
+    apiClient.get(`/graph/lineage/${claimId}`) as Promise<MutationLineage>,
+  feedback: (
+    claimId: string,
+    vote: 'AGREE' | 'DISAGREE',
+    correctedVerdict?: string | null,
+  ) =>
+    apiClient.post('/verdicts/feedback', {
+      claim_id: claimId,
+      vote,
+      corrected_verdict: correctedVerdict ?? null,
+    }) as Promise<FeedbackResult>,
 };

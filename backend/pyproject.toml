@@ -50,6 +50,12 @@ dev = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# Integration tests need a live Postgres + pgvector, so they are opt-in:
+#   pytest tests/integration -m integration
+addopts = '-m "not integration"'
+markers = [
+    "integration: needs a live Postgres + pgvector instance (tests/integration/)",
+]
 
 [tool.ruff]
 line-length = 88

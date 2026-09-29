@@ -19,11 +19,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 
 from app.db.postgres import async_session_maker
 from app.services.verdict.engine import (
+    DISPUTED_BANDS,
+    SUPPORTED_BANDS,
     VerdictEngine,
+    near_window,
     nli_stance,
 )
 
@@ -74,20 +77,37 @@ async def neighbors_for(db, claim_id: str, emb) -> list[dict]:
 
 
 async def outlet_track_records() -> dict[str, dict]:
-    """Historical support/dispute counts per outlet from already-verdicted claims."""
+    """Historical support/dispute counts per outlet from already-verdicted claims.
+
+    The band vocabulary comes from the engine itself (SUPPORTED_BANDS /
+    DISPUTED_BANDS) — the previous hard-coded names ('LEAN_SUPPORTED',
+    'LEAN_DISPUTED') no longer existed, so every outlet silently scored 0/0
+    and the track-record signal never left its Laplace prior.
+    """
+    stmt = (
+        text(
+            """
+            SELECT a.domain AS outlet,
+                   COUNT(*) FILTER (WHERE c.verdict IN :supported) AS supported,
+                   COUNT(*) FILTER (WHERE c.verdict IN :disputed) AS disputed
+            FROM claims c JOIN articles a ON a.id = c.article_id
+            WHERE c.verdict IS NOT NULL
+            GROUP BY a.domain
+            """
+        )
+        .bindparams(
+            bindparam("supported", expanding=True),
+            bindparam("disputed", expanding=True),
+        )
+    )
     async with async_session_maker() as db:
         rows = (
             await db.execute(
-                text(
-                    """
-                    SELECT a.domain AS outlet,
-                           COUNT(*) FILTER (WHERE c.verdict IN ('SUPPORTED','LEAN_SUPPORTED')) AS supported,
-                           COUNT(*) FILTER (WHERE c.verdict IN ('DISPUTED','LEAN_DISPUTED')) AS disputed
-                    FROM claims c JOIN articles a ON a.id = c.article_id
-                    WHERE c.verdict IS NOT NULL
-                    GROUP BY a.domain
-                    """
-                )
+                stmt,
+                {
+                    "supported": list(SUPPORTED_BANDS),
+                    "disputed": list(DISPUTED_BANDS),
+                },
             )
         ).all()
     return {r[0]: {"supported": r[1], "disputed": r[2]} for r in rows}
@@ -97,7 +117,8 @@ async def score_claim(db, claim: dict, track: dict) -> dict | None:
     emb = claim["embedding"]
     nbrs = await neighbors_for(db, claim["id"], emb)
 
-    near = [n for n in nbrs if NEAR_MIN <= (1 - float(n["dist"])) <= NEAR_MAX]
+    lo, hi = near_window()
+    near = [n for n in nbrs if lo <= (1 - float(n["dist"])) <= hi]
 
     # NLI stance on up to 3 nearest cross-outlet neighbors
     checked = []
@@ -137,9 +158,6 @@ async def score_claim(db, claim: dict, track: dict) -> dict | None:
         "rationale": result.rationale,
         "evidence": json.dumps(result.evidence),
     }
-
-
-from app.services.verdict.engine import NEAR_MAX, NEAR_MIN
 
 
 async def persist(db, claim_id: str, v: dict) -> None:

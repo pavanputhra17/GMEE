@@ -21,9 +21,14 @@ export interface TimelineCluster {
 }
 
 export const timelineApi = {
-  clusters: (limit = 60) =>
-    apiClient.get(`/graph/timeline?limit=${limit}`) as Promise<{
+  clusters: (limit = 60, articleId?: string) => {
+    const params = new URLSearchParams({ limit: String(limit) });
+    if (articleId) params.set('article_id', articleId);
+    return apiClient.get(`/graph/timeline?${params.toString()}`) as Promise<{
       clusters: TimelineCluster[];
       count: number;
-    }>,
+      /** true when the response is scoped to one story (article_id drill-down) */
+      focused: boolean;
+    }>;
+  },
 };

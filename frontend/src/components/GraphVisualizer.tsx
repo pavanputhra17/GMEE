@@ -1,7 +1,9 @@
 import React, { useMemo, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Network, Info, ExternalLink } from 'lucide-react';
+import { Network, Info, ExternalLink, Orbit } from 'lucide-react';
 import { corpusApi, StoryCluster } from '../api/corpus';
+import { setSelectedArticle } from '../lib/useSelectedArticle';
+import type { TabType } from './Header';
 
 /**
  * GraphVisualizer — REAL story clusters from Neo4j.
@@ -75,7 +77,7 @@ function layout(clusters: StoryCluster[]): { nodes: Node[]; links: Array<{ a: st
   return { nodes, links };
 }
 
-export const GraphVisualizer: React.FC = () => {
+export const GraphVisualizer: React.FC<{ setActiveTab?: (tab: TabType) => void }> = ({ setActiveTab }) => {
   const [selected, setSelected] = useState<string | null>(null);
   const svgRef = useRef<SVGSVGElement>(null);
 
@@ -222,6 +224,23 @@ export const GraphVisualizer: React.FC = () => {
             </>
           ) : (
             <p className="font-mono text-xs text-hermes-bone/50">Select a node…</p>
+          )}
+
+          {/* View in Timeline — always visible when a node is selected */}
+          {sel && (
+            <button
+              onClick={() => {
+                setSelectedArticle({
+                  id: sel.id,
+                  title: sel.title,
+                  domain: sel.domain,
+                });
+                setActiveTab?.('timeline');
+              }}
+              className="btn-brutal w-fit mt-2"
+            >
+              View in Timeline <Orbit className="w-3.5 h-3.5" />
+            </button>
           )}
         </div>
       </div>

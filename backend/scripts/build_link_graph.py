@@ -150,7 +150,8 @@ def write_neo4j(articles: list[dict], sim_edges, dupe_edges):
                 """
                 UNWIND $rows AS r
                 MERGE (ar:Article {id: r.id})
-                  SET ar.title = r.title, ar.url = r.url, ar.wordCount = r.word_count,
+                  SET ar.title = r.title, ar.url = r.url, ar.domain = r.domain,
+                      ar.wordCount = r.word_count,
                       ar.publishedAt = r.published_at, ar.contentHash = r.hash
                 WITH ar, r
                 MATCH (d:Domain {name: r.domain})

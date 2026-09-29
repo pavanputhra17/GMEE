@@ -118,6 +118,7 @@ const MutationDNA: React.FC = () => {
   });
 
   const chain: MutationChain | undefined = q.data?.chains[active];
+  const [inspect, setInspect] = useState<string | null>(null);
 
   // auto-cycle highlight through versions (the "helix read")
   const [cursor, setCursor] = useState(0);
@@ -162,7 +163,7 @@ const MutationDNA: React.FC = () => {
           {/* helix spine */}
           <div className="absolute left-2 top-2 bottom-2 w-0.5 bg-gradient-to-b from-hermes-red via-hermes-red-bright to-transparent" />
           {chain.versions.map((v, i) => (
-            <a key={v.id} href="#" onClick={(e) => e.preventDefault()}
+            <a key={v.id} href="#" onClick={() => setInspect(v.id)}
                className={`relative block mb-2 border px-4 py-3 transition-all duration-500 ${
                  i === cursor
                    ? 'border-hermes-red-bright bg-hermes-red/10 translate-x-2'
@@ -185,7 +186,130 @@ const MutationDNA: React.FC = () => {
           ))}
         </div>
       )}
+      {inspect && <LineagePanel claimId={inspect} />}
     </section>
+  );
+};
+
+/* ---------------------------------- Mutation Inspector (lineage + typed diff) */
+
+const LineagePanel: React.FC<{ claimId: string }> = ({ claimId }) => {
+  const q = useQuery({
+    queryKey: ['lineage', claimId],
+    queryFn: () => extrasApi.lineage(claimId),
+  });
+  const [di, setDi] = useState(0);
+
+  if (q.isLoading) return <div className="shimmer h-40 mt-5" />;
+  if (q.isError || !q.data) {
+    return (
+      <p className="font-mono text-xs text-hermes-bone/50 mt-5 border border-dashed border-hermes-bone/20 p-3">
+        No EVOLVED_FROM lineage for this claim — it has no recorded mutation links yet.
+      </p>
+    );
+  }
+
+  const data = q.data;
+  const diff = data.diffs[di];
+  const pair = diff
+    ? `v${diff.from_index + 1} → v${diff.to_index + 1}`
+    : 'no version pairs';
+
+  return (
+    <div className="border-t border-hermes-bone/15 mt-5 pt-4">
+      <div className="flex items-center justify-between gap-2 mb-3">
+        <span className="font-mono text-[10px] uppercase tracking-widest text-hermes-bone/45">
+          Mutation Inspector · {data.counts.component_claims} versions · {data.counts.edges} links
+        </span>
+        {data.diffs.length > 0 && (
+          <button
+            onClick={() => setDi((d) => (d + 1) % data.diffs.length)}
+            className="btn-ghost-brutal !py-1 !px-2 !text-[10px] !text-hermes-bone !border-hermes-bone/25"
+          >
+            {pair} ↻
+          </button>
+        )}
+      </div>
+
+      {!diff ? null : (
+        <div className="space-y-3">
+          <div className="flex flex-wrap gap-1.5 items-center">
+            {diff.mutation_types.map((t) => (
+              <span
+                key={t}
+                className="chip-brutal !text-[10px] border-hermes-red/60 text-hermes-red-bright"
+              >
+                {t}
+              </span>
+            ))}
+            <span className="chip-brutal !text-[10px] border-hermes-bone/25 text-hermes-bone/60">
+              sim {(diff.similarity * 100).toFixed(0)}%
+            </span>
+          </div>
+
+          {(diff.numeric_changes.length > 0 || diff.entity_changes.length > 0) && (
+            <div className="font-mono text-[11px] leading-relaxed">
+              {diff.numeric_changes.length > 0 && (
+                <span className="text-hermes-bone/40 uppercase tracking-widest text-[9px] mr-2">
+                  numbers
+                </span>
+              )}
+              {diff.numeric_changes.map((c, i) => (
+                <span key={`n${i}`} className="mr-3">
+                  {c.removed && <span className="text-hermes-red-bright line-through">{c.removed}</span>}
+                  {c.removed && c.added && <span className="text-hermes-bone/40"> → </span>}
+                  {c.added && <span className="text-emerald-400">{c.added}</span>}
+                </span>
+              ))}
+              {diff.entity_changes.length > 0 && (
+                <span className="text-hermes-bone/40 uppercase tracking-widest text-[9px] mr-2 ml-1">
+                  entities
+                </span>
+              )}
+              {diff.entity_changes.map((c, i) => (
+                <span key={`e${i}`} className="mr-3">
+                  {c.removed && <span className="text-hermes-red-bright line-through">{c.removed}</span>}
+                  {c.removed && c.added && <span className="text-hermes-bone/40"> → </span>}
+                  {c.added && <span className="text-emerald-400">{c.added}</span>}
+                </span>
+              ))}
+            </div>
+          )}
+
+          {diff.hedge_changes.length > 0 && (
+            <div className="font-mono text-[11px] leading-relaxed">
+              <span className="text-hermes-bone/40 uppercase tracking-widest text-[9px] mr-2">
+                hedging
+              </span>
+              {diff.hedge_changes.map((h, i) => (
+                <span
+                  key={i}
+                  className={`mr-3 ${h.direction === 'lost' ? 'text-hermes-red-bright' : 'text-emerald-400'}`}
+                >
+                  {h.direction === 'lost' ? '−' : '+'}
+                  {h.word}
+                </span>
+              ))}
+            </div>
+          )}
+
+          <div className="text-xs leading-relaxed border border-hermes-bone/10 bg-hermes-panel-deep p-3">
+            {diff.segments.map((s, i) =>
+              s.type === 'same' ? (
+                <span key={i} className="text-hermes-bone/40">
+                  {s.old}{' '}
+                </span>
+              ) : (
+                <span key={i}>
+                  <span className="text-hermes-red-bright line-through">{s.old}</span>{' '}
+                  <span className="text-emerald-400">{s.new}</span>{' '}
+                </span>
+              ),
+            )}
+          </div>
+        </div>
+      )}
+    </div>
   );
 };
 
