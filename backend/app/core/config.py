@@ -43,6 +43,7 @@ class Settings(BaseSettings):
     
     # NLP
     ANTHROPIC_API_KEY: str = ""
+    HUGGINGFACE_API_KEY: str = ""
     LLM_MODEL: str = "claude-haiku-4-5-20251001"
     NLP_MAX_ARTICLES_PER_CYCLE: int = 10
 
