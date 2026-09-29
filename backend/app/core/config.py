@@ -7,10 +7,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     POSTGRES_URL: str
-    NEO4J_URI: str
-    NEO4J_USER: str
-    NEO4J_PASSWORD: str
-    REDIS_URL: str
+    NEO4J_URI: str = ""
+    NEO4J_USER: str = ""
+    NEO4J_PASSWORD: str = ""
+    REDIS_URL: str = ""
     CORS_ORIGINS: str | list[str]
     ENVIRONMENT: Literal["development", "production", "testing"] = "development"
     

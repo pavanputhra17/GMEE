@@ -34,6 +34,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     EmbeddingService.load_model()
     # Startup
     settings = get_settings()
+
+    # Auto-enable pgvector extension (idempotent)
+    from sqlalchemy import text
+    from app.db.postgres import engine
+    async with engine.begin() as conn:
+        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+
     await seed_sources()
     if settings.ENABLE_SCHEDULER:
         scheduler.start_scheduler()

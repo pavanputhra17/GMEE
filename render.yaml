@@ -37,7 +37,7 @@ services:
         sync: false
       - key: ANTHROPIC_API_KEY
         sync: false
-    healthCheckPath: /api/v1/health/ready
+    healthCheckPath: /api/v1/health
 
   # ──────── Frontend (Vite Static Site) ────────
   - type: web
