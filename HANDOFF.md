@@ -37,6 +37,16 @@ eslint 0 · vitest 48 passed · vite build ok):**
    before `docker start` if you want the containerised pair.**
 3. `.dockerignore` added for both images; `gmee_backend_source.zip` gitignored;
    `run_verdicts.py --rescore`.
+4. **Compose stack fixed and E2E-verified:** the `backend` service had been
+   crash-looping forever (`.env` uses `localhost:55432` — unreachable inside a
+   container) so its dead port-proxy returned empty replies on :8000. Added
+   in-network `environment:` overrides (postgres/redis/neo4j service names).
+   Verified the full production path live: `docker compose up -d --build` →
+   SPA on :3000, `/api/v1/health/ready` through the nginx proxy → 200
+   `{"status":"ready"}`. nginx uses Docker-DNS deferred resolution
+   (`resolver 127.0.0.11` + variable `proxy_pass`) so the image also boots
+   standalone. App containers then stopped again per the table below; local
+   uvicorn (:8000) + vite (:5050) restarted and verified ready.
 
 **Still open (known gaps):** label 500+ golden pairs → then calibration/plots;
 re-run verdicts overnight; thin outlet diversity (data limitation, documented

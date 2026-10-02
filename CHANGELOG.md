@@ -74,6 +74,13 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); semver
   `vite build` → nginx serving `dist` with a same-origin `/api` proxy,
   `VITE_API_BASE_URL` overridable at build time); compose maps `3000:80` and
   the frontend service no longer mounts dev volumes
+- Compose `backend` crash-looped permanently (`.env` points at
+  `localhost:55432`, unreachable from inside a container), leaving a dead
+  port-proxy squatting `:8000` with empty replies: the backend service now
+  overrides `POSTGRES_URL`/`DATABASE_URL`/`REDIS_URL`/`NEO4J_*` with in-network
+  service names and container ports (`environment` beats `env_file`, host dev
+  keeps `.env`). Full production path verified end-to-end: nginx SPA on :3000
+  → `/api` proxy → backend container → `health/ready` 200
 - Vertical scroll overshoot: pages could scroll past their content into blank
   space. Fixes: `AsciiEqualizer` glyph strip is now self-clipping (it added
   ~640px of overflow at phone widths); the dashboard root clips horizontal
