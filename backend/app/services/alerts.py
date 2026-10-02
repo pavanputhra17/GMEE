@@ -145,6 +145,16 @@ def _evidence_signal(evidence: Any, key: str) -> float | None:
     return None
 
 
+def _evidence_detail(evidence: Any, key: str, field: str) -> float | None:
+    """Nested numeric detail of one signal (e.g. its raw contradiction ratio)."""
+    if not isinstance(evidence, dict):
+        return None
+    sig = evidence.get(key)
+    if isinstance(sig, dict) and isinstance(sig.get(field), (int, float)):
+        return float(sig[field])
+    return None
+
+
 async def evaluate_alerts(db: Any, window_hours: int = 6) -> dict[str, Any]:
     """One persistent evaluation pass; deduplicates and commits."""
     from datetime import timedelta
@@ -171,7 +181,15 @@ async def evaluate_alerts(db: Any, window_hours: int = 6) -> dict[str, Any]:
     )
     for c in res.scalars().all():
         corr = _evidence_signal(c.verdict_evidence, "corroboration")
-        contra = _evidence_signal(c.verdict_evidence, "contradiction")
+        # The contradiction SIGNAL is neutral-centred (0.5 = no contradiction),
+        # so the alert threshold applies to the raw ratio it carries in its
+        # detail. Rows scored before that change stored the ratio directly in
+        # `value` — fall back to it so historical evidence still alerts.
+        contra = _evidence_detail(
+            c.verdict_evidence, "contradiction", "contradiction_ratio"
+        )
+        if contra is None:
+            contra = _evidence_signal(c.verdict_evidence, "contradiction")
         if contra is not None and contra >= CONTRADICTION_THRESHOLD:
             raised.append({
                 "kind": "CONTRADICTION", "severity": "CRITICAL",

@@ -7,9 +7,14 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 from pydantic import Field as PField
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 
 from app.db.postgres import async_session_maker
+from app.services.verdict.engine import (
+    DISPUTED_BANDS,
+    SUPPORTED_BANDS,
+    engine_config,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -91,13 +96,20 @@ async def verdict_stats() -> dict[str, Any]:
                     """
                     SELECT a.domain AS outlet,
                            COUNT(*) AS claims_total,
-                           COUNT(*) FILTER (WHERE c.verdict IN ('SUPPORTED','LEAN_SUPPORTED')) AS supported,
-                           COUNT(*) FILTER (WHERE c.verdict IN ('DISPUTED','LEAN_DISPUTED')) AS disputed
+                           COUNT(*) FILTER (WHERE c.verdict IN :supported) AS supported,
+                           COUNT(*) FILTER (WHERE c.verdict IN :disputed) AS disputed
                     FROM claims c JOIN articles a ON a.id = c.article_id
                     GROUP BY a.domain HAVING COUNT(*) > 0
                     ORDER BY claims_total DESC
                     """
-                )
+                ).bindparams(
+                    bindparam("supported", expanding=True),
+                    bindparam("disputed", expanding=True),
+                ),
+                {
+                    "supported": list(SUPPORTED_BANDS),
+                    "disputed": list(DISPUTED_BANDS),
+                },
             )
         ).all()
 
@@ -366,7 +378,6 @@ async def submit_verdict_feedback(
 async def verdict_summary() -> dict[str, Any]:
     """Engine-wide XAI summary: live distribution, full disclosed config,
     and human agreement metrics (the start of the evaluation loop)."""
-    from app.services.verdict.engine import engine_config
 
     async with async_session_maker() as db:
         dist = (

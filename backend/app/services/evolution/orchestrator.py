@@ -106,7 +106,10 @@ class EvolutionOrchestrator:
 
         # 5. Neo4j Sync
         neo4j_success = await self.neo4j_writer.sync_to_graph(
-            claims, articles_by_id, sources_by_id, relationships
+            claims, articles_by_id, sources_by_id, relationships,
+            # Stale-edge pruning is scoped to claims the mutation detector
+            # just re-examined; topic -1 means unclustered (never evaluated).
+            evaluated_claim_ids={a.claim_id for a in assignments if a.topic_id != -1},
         )
 
         valid_clusters = len({a.topic_id for a in assignments if a.topic_id != -1})

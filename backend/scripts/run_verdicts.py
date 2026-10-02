@@ -9,7 +9,13 @@ For each claim:
   4. combine five signals -> P(supported), band, rationale, evidence
   5. persist to claims.verdict_*
 
-Usage: python scripts/run_verdicts.py [limit]
+Usage: python scripts/run_verdicts.py [limit] [--rescore]
+
+By default only unscored claims (verdict IS NULL) are picked up. Pass
+--rescore to re-run the engine over already-verdicted claims as well —
+required after engine changes, or existing bands would never be recomputed
+(e.g. the degenerate 62%-UNSUPPORTED distribution predates the current
+contradiction/corroboration logic).
 """
 
 import asyncio
@@ -31,12 +37,15 @@ from app.services.verdict.engine import (
 )
 
 
-async def load_claims(limit: int):
+async def load_claims(limit: int, rescore: bool = False):
+    # `rescore` is a script-local flag (not user input), so the conditional
+    # predicate below is a fixed literal either way.
+    predicate = "TRUE" if rescore else "c.verdict IS NULL"
     async with async_session_maker() as db:
         rows = (
             await db.execute(
                 text(
-                    """
+                    f"""
                     SELECT c.id::text AS id, c.claim_text, c.embedding,
                            a.domain AS outlet,
                            COALESCE(
@@ -46,7 +55,7 @@ async def load_claims(limit: int):
                                '[]'::json) AS entities
                     FROM claims c
                     JOIN articles a ON a.id = c.article_id
-                    WHERE c.verdict IS NULL
+                    WHERE {predicate}
                     ORDER BY c.confidence DESC NULLS LAST
                     LIMIT :lim
                     """
@@ -130,9 +139,12 @@ async def score_claim(db, claim: dict, track: dict) -> dict | None:
         checked.append({**nb, "sim": round(1 - float(nb["dist"]), 3), "nli": stance})
 
     # neighbors without explicit NLI stance count as neutral proximity;
-    # NLI-checked ones carry their stance
+    # NLI-checked ones carry their stance. Every entry carries its similarity so
+    # the corroboration signal can credit near-identical paraphrases even when
+    # the NLI model abstains (see VERDICT_STRONG_SIMILARITY).
     pool = [
-        {**n, "nli": next((c["nli"] for c in checked if c["id"] == n["id"]), None)}
+        {**n, "sim": round(1 - float(n["dist"]), 3),
+         "nli": next((c["nli"] for c in checked if c["id"] == n["id"]), None)}
         for n in near
     ] or checked
     corr_sig, contra_sig = VerdictEngine.corroboration_signal(pool, own_domain)
@@ -176,10 +188,14 @@ async def persist(db, claim_id: str, v: dict) -> None:
 
 
 async def main() -> None:
-    limit = int(sys.argv[1]) if len(sys.argv) > 1 else 100
+    argv = sys.argv[1:]
+    rescore = "--rescore" in argv
+    positional = [a for a in argv if a != "--rescore"]
+    limit = int(positional[0]) if positional else 100
 
-    claims = await load_claims(limit)
-    print(f"scoring {len(claims)} unscored claims …")
+    claims = await load_claims(limit, rescore=rescore)
+    mode = "claims (rescore mode)" if rescore else "unscored claims"
+    print(f"scoring {len(claims)} {mode} …")
 
     done = 0
     # two passes: first pass seeds track records with initial scoring,

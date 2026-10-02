@@ -17,5 +17,8 @@ RUN pip install --upgrade pip && \
 
 EXPOSE 8000
 
-# Production: no --reload, 2 workers for free tier, bind to PORT env var
-CMD uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 2
+# Production: no --reload, 2 workers for free tier, bind to PORT env var.
+# JSON form (with sh -c) keeps BuildKit's JSONArgsRecommended check green
+# while still expanding ${PORT:-8000} at container start.
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 2"]
+

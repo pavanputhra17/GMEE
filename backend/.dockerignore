@@ -1,0 +1,13 @@
+# Build context hygiene: keep host state out of the image (.venv alone would
+# be hundreds of MB and would shadow site-packages in the COPY layer).
+.venv
+venv
+__pycache__
+*.pyc
+.pytest_cache
+.ruff_cache
+.mypy_cache
+*.log
+.env
+eval_report.json
+tests

@@ -1,7 +1,49 @@
 # GMEE Session Handoff — Start Here
 
 > **For the next agent/session:** This file captures the full state of an in-progress
-> "make GMEE 10/10" campaign. Read it fully before touching anything. Last updated: 2026-09-20.
+> "make GMEE 10/10" campaign. Read it fully before touching anything. Last updated: 2026-10-02.
+
+## 🟢 2026-10-02 session — cons sweep: engine scoring fixes · eval infra · Neo4j batching · production images
+
+**Verdict-engine correctness (the degenerate-distribution fix, pending re-run):**
+contradiction evidence is now re-centered instead of vanishing when a cluster
+mixes with/against, strong-similarity cross-outlet paraphrases corroborate even
+when the NLI model abstains (`VERDICT_STRONG_SIMILARITY`), STANCE_CACHE is
+TTL+size bounded, thresholds are settings-overridable (env-var wired), and the
+track-record bands bug (`LEAN_*` names that never existed) is fixed.
+**To materialize this on the live corpus, run
+`python scripts/run_verdicts.py 10000 --rescore`** (new flag — without it only
+`verdict IS NULL` claims are picked up, so the existing 62%-UNSUPPORTED rows
+would never be recomputed; CPU-heavy, run it overnight).
+
+**Eval infra:** Brier/ECE/bootstrap-CI metrics (`metrics.py`), `report.py`,
+`run_eval.py` ablation runner, HNSW index migration (`b7d2f4a8c1e9`), pgvector
+integration tests (`tests/integration/`, `-m integration`, CI job runs them
+against a real pgvector service container; main suite stays SQLite). Still
+missing for a paper: **500+ human-labeled pairs** (Eval Lab tab is ready).
+
+**This session's fixes (all gates green: ruff 0 · mypy 0 · pytest 161 passed ·
+eslint 0 · vitest 48 passed · vite build ok):**
+1. `Neo4jWriter` rewritten: batched `UNWIND` writes (was 4+ round-trips/claim →
+   ~40k statements/cycle on the live corpus) + scoped pruning of stale
+   `EVOLVED_FROM` edges so Neo4j mirrors the dedup'd Postgres table
+   (orchestrator passes `evaluated_claim_ids`; new test
+   `test_neo4j_writer_prunes_stale_evolved_edges`).
+2. `frontend/Dockerfile` no longer runs `npm run dev`: multi-stage
+   `npm ci` → `vite build` → nginx on :80 with same-origin `/api` proxy
+   (`frontend/nginx.conf`, `VITE_API_BASE_URL` build-arg, defaults `/api/v1`);
+   compose frontend now `3000:80` without dev bind mounts. **The stopped
+   `gmee_frontend`/`gmee_backend` containers are stale — `docker compose build`
+   before `docker start` if you want the containerised pair.**
+3. `.dockerignore` added for both images; `gmee_backend_source.zip` gitignored;
+   `run_verdicts.py --rescore`.
+
+**Still open (known gaps):** label 500+ golden pairs → then calibration/plots;
+re-run verdicts overnight; thin outlet diversity (data limitation, documented
+in `docs/DATASET.md`); commit the working tree (push needs explicit user
+go-ahead per project protocol).
+
+**Everything below this block is the previous (2026-09-20) session log — kept for its pitfalls.**
 
 ## 🟢 2026-09-20 session — dev servers up · alerts surfaced · claims graph fixed
 

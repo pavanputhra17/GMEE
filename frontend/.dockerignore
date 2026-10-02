@@ -1,0 +1,8 @@
+# Build context hygiene: keep host state out of the image.
+node_modules
+dist
+coverage
+*.log
+.vite
+.env
+.env.local

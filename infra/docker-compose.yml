@@ -82,12 +82,10 @@ services:
     # Unless-stopped for the same reason as the backend above.
     restart: unless-stopped
     ports:
-      - "3000:3000"
-    env_file:
-      - ../.env
-    volumes:
-      - ../frontend:/app
-      - /app/node_modules
+      # nginx serves the built SPA on :80 in the container; host :3000 keeps
+      # the previous public URL. API calls are same-origin (/api/v1) and
+      # proxied by nginx to the backend service — no CORS involved.
+      - "3000:80"
     depends_on:
       backend:
         condition: service_started

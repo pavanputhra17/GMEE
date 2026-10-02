@@ -1,7 +1,7 @@
 from functools import lru_cache
 from typing import Any, Literal
 
-from pydantic import field_validator
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -20,7 +20,13 @@ class Settings(BaseSettings):
 
     # Data Collection
     COLLECTION_INTERVAL_MINUTES: int = 30
-    NEWSAPI_KEY: str = ""
+    # Accepts both NEWSAPI_KEY (the canonical attribute name) and NEWS_API_KEY
+    # (the name used by .env.example / README). A plain str field would silently
+    # ignore NEWS_API_KEY because Settings uses extra="ignore".
+    NEWSAPI_KEY: str = Field(
+        default="",
+        validation_alias=AliasChoices("NEWSAPI_KEY", "NEWS_API_KEY"),
+    )
     REDDIT_CLIENT_ID: str = ""
     REDDIT_CLIENT_SECRET: str = ""
     REDDIT_USER_AGENT: str = "python:gmee:v0.1.0"
@@ -33,6 +39,10 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: str = ""
     LLM_MODEL: str = "claude-haiku-4-5-20251001"
     NLP_MAX_ARTICLES_PER_CYCLE: int = 10
+    # Claim-extraction backend. "" (default) auto-selects: Anthropic when an
+    # API key is present, otherwise the local HuggingFace FLAN-T5 extractor.
+    # Set to "anthropic", "huggingface" or "none" (legacy skip behaviour).
+    LLM_BACKEND: str = ""
 
     # Evolution Engine
     MIN_CORPUS_SIZE_FOR_CLUSTERING: int = 30
@@ -48,6 +58,13 @@ class Settings(BaseSettings):
     # 0.55–0.75), collapsing ~95% of verdicts to UNSUPPORTED.
     VERDICT_NEAR_MIN: float = 0.60
     VERDICT_NEAR_MAX: float = 0.97
+
+    # Cosine similarity at or above which a cross-outlet neighbour is counted
+    # as corroboration WITHOUT waiting for the NLI model to say "yes". At this
+    # distance the two sentences are near-identical paraphrases, and FLAN-T5
+    # base was measured to answer "neutral" for most of them — which starved
+    # the corroboration signal and collapsed the corpus to UNSUPPORTED.
+    VERDICT_STRONG_SIMILARITY: float = 0.85
 
     # Embedding model. Default: all-mpnet-base-v2 (768-dim, English).
     # Cross-lingual lineage: set to paraphrase-multilingual-mpnet-base-v2

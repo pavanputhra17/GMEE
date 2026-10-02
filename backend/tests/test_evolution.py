@@ -217,12 +217,63 @@ async def test_neo4j_writer_idempotency():
         res = await writer.sync_to_graph(claims, articles, sources, relationships)
         assert res is True
         
-        # Verify run was called with MERGE
+        # Verify run was called with MERGE - every write batched via UNWIND,
+        # never one round-trip per row (4 statements for this slice: sources,
+        # claims, PUBLISHED_BY, SIMILAR_TO).
         calls = mock_session.run.call_args_list
         assert len(calls) > 0
+        assert len(calls) <= 6
         for call in calls:
             query = call[0][0]
             assert "MERGE" in query
+            assert "UNWIND" in query
+
+
+@pytest.mark.asyncio
+async def test_neo4j_writer_prunes_stale_evolved_edges():
+    """EVOLVED_FROM edges Postgres no longer holds are deleted in Neo4j.
+
+    Pruning is scoped to claims the run evaluated, and ``keep`` carries only
+    the current edge set for those claims - mirroring the Postgres prune so
+    the two stores cannot drift.
+    """
+    writer = Neo4jWriter()
+
+    with patch("app.services.evolution.neo4j_writer.neo4j_client.get_driver") as mock_get_driver:
+        mock_driver = AsyncMock()
+        mock_get_driver.return_value = mock_driver
+        mock_session = AsyncMock()
+        mock_session_cm = AsyncMock()
+        mock_session_cm.__aenter__.return_value = mock_session
+        mock_driver.session = MagicMock(return_value=mock_session_cm)
+
+        c0 = Claim(id=uuid.uuid4(), article_id=uuid.uuid4(), claim_text="a", extracted_at=datetime.now(UTC), entities=[])
+        c1 = Claim(id=uuid.uuid4(), article_id=c0.article_id, claim_text="b", extracted_at=datetime.now(UTC), entities=[])
+        art = Article(id=c0.article_id, source_id=uuid.uuid4())
+        src = AsyncMock(id=art.source_id, name="Test", type=AsyncMock(value="rss"))
+
+        kept = ClaimRelationship(
+            from_claim_id=c1.id,
+            to_claim_id=c0.id,
+            relationship_type=RelationshipTypeEnum.EVOLVED_FROM,
+            score=0.9,
+        )
+
+        res = await writer.sync_to_graph(
+            [c0, c1],
+            {art.id: art},
+            {src.id: cast(Source, src)},
+            [kept],
+            evaluated_claim_ids={c0.id, c1.id},
+        )
+        assert res is True
+
+        calls = mock_session.run.call_args_list
+        prune_calls = [c for c in calls if "DELETE r" in c[0][0]]
+        assert len(prune_calls) == 1
+        prune_kwargs = prune_calls[0][1]
+        assert set(prune_kwargs["claim_ids"]) == {str(c0.id), str(c1.id)}
+        assert prune_kwargs["keep"] == [[str(c1.id), str(c0.id)]]
 
 
 @pytest.mark.asyncio

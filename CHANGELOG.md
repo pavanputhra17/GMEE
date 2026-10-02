@@ -53,8 +53,27 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); semver
 - Mutation-edge lifecycle tests: a re-run upserts stored edges (never inserts a
   duplicate) and prunes EVOLVED_FROM edges an evaluated claim no longer
   reproduces (`tests/test_evolution.py`)
+- `scripts/run_verdicts.py --rescore` flag: re-runs the verdict engine over
+  already-verdicted claims as well as unscored ones — required after engine
+  changes (the live 62%-UNSUPPORTED / 0-DISPUTED distribution predates the
+  contradiction-recentering and strong-similarity corroboration fixes and
+  would otherwise never be recomputed)
+- `.dockerignore` for both image builds (host `.venv` / `node_modules` /
+  coverage / logs no longer enter the build context)
 
 ### Fixed
+- Neo4j sync ran 4+ Bolt round-trips per claim (~40k statements for the live
+  corpus) and never removed stale `EVOLVED_FROM` edges: `Neo4jWriter` now
+  issues batched `UNWIND` writes (sources/claims/edges grouped, relationship
+  types allow-listed) — a handful of statements per cycle — and prunes
+  `EVOLVED_FROM` edges the authoritative Postgres run no longer reproduces,
+  scoped to the claims the cycle actually evaluated
+  (`test_neo4j_writer_prunes_stale_evolved_edges`)
+- `frontend/Dockerfile` ran `npm run dev` as its "production" CMD and compose
+  bind-mounted host source over it: now a multi-stage build (`npm ci` →
+  `vite build` → nginx serving `dist` with a same-origin `/api` proxy,
+  `VITE_API_BASE_URL` overridable at build time); compose maps `3000:80` and
+  the frontend service no longer mounts dev volumes
 - Vertical scroll overshoot: pages could scroll past their content into blank
   space. Fixes: `AsciiEqualizer` glyph strip is now self-clipping (it added
   ~640px of overflow at phone widths); the dashboard root clips horizontal

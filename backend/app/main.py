@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import text
 
 from app.api.v1 import (
     alerts,
@@ -22,6 +23,7 @@ from app.api.v1 import (
 from app.core import scheduler
 from app.core.config import get_settings
 from app.core.ops_security import install_rate_limiter, install_security_headers
+from app.db.postgres import engine
 from app.services.nlp.embedding_service import EmbeddingService
 from app.services.nlp.entity_extractor import EntityExtractor
 from app.services.seeder import seed_sources
@@ -36,8 +38,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
 
     # Auto-enable pgvector extension (idempotent)
-    from sqlalchemy import text
-    from app.db.postgres import engine
     async with engine.begin() as conn:
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
 

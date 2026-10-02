@@ -8,13 +8,16 @@ UI — nothing is hidden:
 
   1. CORROBORATION  — how many *distinct outlets* assert the same claim.
      Found via pgvector cosine similarity between claim embeddings across
-     articles from different domains. Independent confirmation is the
-     strongest known signal in verification practice.
+     articles from different domains, confirmed either by NLI entailment or by
+     the two sentences sitting at/above VERDICT_STRONG_SIMILARITY (a
+     near-identical paraphrase). Independent confirmation is the strongest
+     known signal in verification practice.
 
   2. CONTRADICTION  — cross-domain claims whose embeddings are near but
      whose NLI stance is negative. Two outlets asserting opposite facts is
-     evidence of dispute; the ratio of contradicting to corroborating
-     neighbors directly moves probability downward.
+     evidence of dispute. The raw ratio (0 = nobody contradicts, 1 = every
+     neighbour contradicts) is re-centred to 0.5 = neutral before pooling, so
+     silence is never mistaken for evidence against a claim.
 
   3. SOURCE TRACK RECORD — each outlet carries a credibility prior learned
      from its own history in this corpus: how often do its claims end up
@@ -51,6 +54,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, TypedDict
 
+from app.core.config import get_settings
+
 logger = logging.getLogger(__name__)
 
 # ---- weights (sum = 1.0). Tuned by hand on the live corpus; each is a
@@ -61,21 +66,15 @@ W_TRACK = 0.15
 W_ENTITY = 0.15
 W_LANGUAGE = 0.10
 
-# similarity window for considering another claim "the same assertion".
-# Defaults are overridable via VERDICT_NEAR_MIN / VERDICT_NEAR_MAX settings —
-# the original hard-coded 0.75 floor collapsed ~95% of verdicts to
-# UNSUPPORTED on real news corpora.
-NEAR_MIN_DEFAULT = 0.60
-NEAR_MAX_DEFAULT = 0.97
-# Backwards-compatible aliases (used by scripts/run_verdicts.py historically).
-NEAR_MIN = NEAR_MIN_DEFAULT
-NEAR_MAX = NEAR_MAX_DEFAULT
+# Similarity window for considering another claim "the same assertion".
+# The defaults live in Settings (VERDICT_NEAR_MIN / VERDICT_NEAR_MAX) and are
+# read through near_window() so the disclosed config can never drift from the
+# values actually in force — the original hard-coded 0.75 floor collapsed ~95%
+# of verdicts to UNSUPPORTED on real news corpora.
 
 
 def near_window() -> tuple[float, float]:
     """Effective (min, max) similarity window, settings-overridable."""
-    from app.core.config import get_settings
-
     s = get_settings()
     return (s.VERDICT_NEAR_MIN, s.VERDICT_NEAR_MAX)
 
@@ -94,6 +93,7 @@ class EngineConfig(TypedDict):
     weights: dict[str, float]
     bands: list[BandSpec]
     near_similarity_window: dict[str, float]
+    strong_similarity_corroboration: float
     laplace_alpha_smoothing: float
     pooling: str
     disputed_rule: str
@@ -129,6 +129,7 @@ def engine_config() -> EngineConfig:
             "min": win_min,
             "max": win_max,
         },
+        "strong_similarity_corroboration": get_settings().VERDICT_STRONG_SIMILARITY,
         "laplace_alpha_smoothing": LAPLACE_ALPHA,
         "pooling": "weighted log-odds (sum of w_i * logit(v_i), normalized)",
         "disputed_rule": "DISPUTED requires an explicit NLI contradiction; "
@@ -268,15 +269,22 @@ class VerdictEngine:
         supporting_domains: set[str] = set()
         contradicting_domains: set[str] = set()
         neutral_nearby = 0
+        strong_sim = get_settings().VERDICT_STRONG_SIMILARITY
 
         for nb in neighbor_claims:
             dom = nb.get("domain")
             if not dom or dom == own_domain:
                 continue  # same-outlet repetition isn't independent
             stance = nb.get("nli")
+            similarity = float(nb.get("sim") or 0.0)
             if stance == "no":
                 contradicting_domains.add(dom)
-            elif stance == "yes":
+            elif stance == "yes" or similarity >= strong_sim:
+                # Either the NLI model confirmed entailment, or the two
+                # sentences are near-identical paraphrases (>= the disclosed
+                # VERDICT_STRONG_SIMILARITY). Requiring FLAN-T5-base to
+                # pronounce "yes" on paraphrase pairs starved this signal and
+                # pushed the whole corpus to UNSUPPORTED.
                 supporting_domains.add(dom)
             else:
                 neutral_nearby += 1
@@ -300,9 +308,21 @@ class VerdictEngine:
         )
         contradiction = Signal(
             name="contradiction",
-            value=round(contra_ratio, 3),  # 1.0 = everyone contradicts
+            # `combine()` pools every signal as "1.0 pushes toward SUPPORTED",
+            # so the raw contradiction ratio has to be re-oriented around the
+            # neutral 0.5:
+            #   no contradiction     -> 0.5  (logit 0: no effect — absence of
+            #                                evidence is not evidence of absence)
+            #   everyone contradicts -> 0.0  (a strong downward pull)
+            # Emitting the raw ratio meant a claim with NO contradiction scored
+            # 0.0 and paid logit(0.01) * 0.20 ≈ -0.92 — the single largest term
+            # in the pool, and the reason ~62% of the corpus sat at UNSUPPORTED.
+            value=round(0.5 - 0.5 * contra_ratio, 3),
             weight=W_CONTRA,
-            detail={"outlets_contradicting": sorted(contradicting_domains)},
+            detail={
+                "outlets_contradicting": sorted(contradicting_domains),
+                "contradiction_ratio": round(contra_ratio, 3),
+            },
         )
         return corroboration, contradiction
 
@@ -351,7 +371,12 @@ class VerdictEngine:
 
         contra = next((s for s in signals if s.name == "contradiction"), None)
         corr = next((s for s in signals if s.name == "corroboration"), None)
-        has_contra = bool(contra and contra.value > 0)
+        # The contradiction signal is neutral-centred (0.5 = no contradiction),
+        # so DISPUTED is decided by the raw ratio carried in its detail.
+        has_contra = bool(
+            contra
+            and float((contra.detail or {}).get("contradiction_ratio", 0.0)) > 0
+        )
         has_corr = corr is not None and len(
             (corr.detail or {}).get("independent_outlets_supporting", [])
         ) > 0
@@ -399,6 +424,10 @@ def _load_nli() -> tuple[Any, Any]:
 
 
 STANCE_CACHE: dict[str, str] = {}
+# Bounded memo: one entry per (claim, neighbour) pair would grow without limit
+# in a long-running API process. Clearing at the cap is enough — the cache is a
+# latency optimisation, never a source of truth.
+STANCE_CACHE_MAX = 20_000
 
 
 async def nli_stance(claim_text: str, other_text: str) -> str:
@@ -425,5 +454,7 @@ async def nli_stance(claim_text: str, other_text: str) -> str:
         return "yes" if ans == "yes" else ("no" if ans == "no" else "neutral")
 
     result = await asyncio.to_thread(_run)
+    if len(STANCE_CACHE) >= STANCE_CACHE_MAX:
+        STANCE_CACHE.clear()
     STANCE_CACHE[key] = result
     return result
