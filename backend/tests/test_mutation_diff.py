@@ -34,6 +34,8 @@ def test_entity_substitution_detected():
     b = "President Torres met the ambassador on Monday."
     d = diff_versions(a, b)
     assert "ENTITY_SUBSTITUTION" in d["mutation_types"]
+    assert {"removed": "Garcia", "added": ""} in d["entity_changes"]
+    assert {"removed": "", "added": "Torres"} in d["entity_changes"]
 
 
 def test_identical_text_is_near_duplicate():
@@ -60,3 +62,39 @@ def test_segments_render_same_and_changed_runs():
     for s in d["segments"]:
         if s["type"] == "changed":
             assert s["kinds"]  # non-empty kind list
+
+
+def test_old_output_keys_are_preserved_with_additive_typed_analysis():
+    d = diff_versions(
+        "According to Alice, all bridges reportedly did not close at 10 am.",
+        "Bob said some bridges did close at 12 am.",
+    )
+    assert {
+        "numeric_changes",
+        "entity_changes",
+        "hedge_changes",
+        "similarity",
+        "mutation_types",
+        "segments",
+    } <= d.keys()
+    assert {
+        "POLARITY_SHIFT",
+        "HEDGING_SHIFT",
+        "ATTRIBUTION_SHIFT",
+        "SCOPE_SHIFT",
+        "NUMERIC_DRIFT",
+        "ENTITY_SUBSTITUTION",
+    } <= set(d["mutation_types"])
+    assert d["analysis"]["changed_spans"]
+    assert d["polarity_changes"]
+    assert d["attribution_changes"]
+    assert d["scope_changes"]
+    assert d["observed_propagation"] is False
+    assert d["algorithm_version"] == d["analysis"]["algorithm_version"]
+    for segment in d["segments"]:
+        assert {"type", "old", "new", "kinds"} <= segment.keys()
+
+
+def test_decimal_currency_is_a_single_numeric_token():
+    assert "$1,200.50" in tokenize("It cost $1,200.50.")
+    assert "3.5%" in tokenize("Rates rose by 3.5%.")

@@ -1,76 +1,53 @@
-"""GMEE Verdict Engine — probabilistic misinformation assessment.
+"""Evidence-gated verdict bands and local three-class textual stance.
 
-Methodology (fully transparent, reproducible, no black box):
+The legacy ``probability`` field is retained for storage/API compatibility,
+not as a calibrated probability of truth. It is a hand-weighted heuristic.
+Similarity retrieves candidates; only explicit NLI entailment can establish
+corroboration, and only explicit contradiction can establish dispute.
+Language, entities and source priors cannot establish support on their own.
 
-A claim's verdict probability is a weighted combination of five
-independently-computable signals. Every input is shown to the user in the
-UI — nothing is hidden:
-
-  1. CORROBORATION  — how many *distinct outlets* assert the same claim.
-     Found via pgvector cosine similarity between claim embeddings across
-     articles from different domains, confirmed either by NLI entailment or by
-     the two sentences sitting at/above VERDICT_STRONG_SIMILARITY (a
-     near-identical paraphrase). Independent confirmation is the strongest
-     known signal in verification practice.
-
-  2. CONTRADICTION  — cross-domain claims whose embeddings are near but
-     whose NLI stance is negative. Two outlets asserting opposite facts is
-     evidence of dispute. The raw ratio (0 = nobody contradicts, 1 = every
-     neighbour contradicts) is re-centred to 0.5 = neutral before pooling, so
-     silence is never mistaken for evidence against a claim.
-
-  3. SOURCE TRACK RECORD — each outlet carries a credibility prior learned
-     from its own history in this corpus: how often do its claims end up
-     corroborated vs contradicted? Bayesian-smoothed (Laplace alpha) so a
-     single article can't swing an outlet's prior.
-
-  4. ENTITY GROUNDING — verifiable claims name checkable things (people,
-     places, organisations, dates, quantities). Claims with zero named
-     entities are far more likely to be vague or unfalsifiable.
-
-  5. LINGUISTIC HEDGES — hedged or sensational phrasing ("reportedly",
-     "conspiracy", "shocking", "sources say") statistically correlates with
-     lower factual reliability. Measured, weighted, disclosed.
-
-Verdict bands (probability that the claim is SUPPORTED):
-    >= 0.72  SUPPORTED
-    0.55-0.72 PARTIALLY_SUPPORTED
-    0.38-0.55 UNRESOLVED            (genuinely uncertain — we say so)
-    <  0.38  WEAKLY_CORROBORATED    (some corroboration, no confidence)
-    <  0.38  UNSUPPORTED            (single-source; nothing backs it)
-    DISPUTED is an override, never a threshold: it requires an explicit NLI
-    contradiction AND p < 0.45. Absence of evidence is not evidence of
-    absence, so a low probability alone never yields DISPUTED.
-
-The engine NEVER claims absolute truth: it outputs P(supported | evidence)
-plus every factor that produced it. That transparency IS the standard.
+Source priors default to neutral. Supplied priors must disclose independently
+validated data and provenance, never counts of this engine's own verdicts.
+Corpus agreement and different domains do not prove factual truth or source
+independence. New evidence records disclose these limitations and a version;
+previously stored verdicts are neither deleted nor automatically rescored.
 """
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
+import json
 import logging
 import math
 import re
+from collections import OrderedDict
 from dataclasses import dataclass, field
-from typing import Any, TypedDict
+from threading import Lock
+from time import monotonic
+from typing import Any, Literal, TypedDict
+from urllib.parse import urlsplit
 
 from app.core.config import get_settings
 
 logger = logging.getLogger(__name__)
 
-# ---- weights (sum = 1.0). Tuned by hand on the live corpus; each is a
-# bounded log-odds contribution converted back to probability.
+METHOD_VERSION = "corpus-nli-v1"
+SCORE_KIND: Literal["uncalibrated_heuristic"] = "uncalibrated_heuristic"
+DEFAULT_NLI_MODEL = "cross-encoder/nli-deberta-v3-base"
+Stance = Literal["entailment", "contradiction", "neutral"]
+LegacyStance = Literal["yes", "no", "neutral"]
+
+# Hand-set weights, not fitted or calibrated probabilities.
 W_CORROB = 0.40
 W_CONTRA = 0.20
 W_TRACK = 0.15
 W_ENTITY = 0.15
 W_LANGUAGE = 0.10
 
-# Similarity window for considering another claim "the same assertion".
-# The defaults live in Settings (VERDICT_NEAR_MIN / VERDICT_NEAR_MAX) and are
-# read through near_window() so the disclosed config can never drift from the
-# values actually in force — the original hard-coded 0.75 floor collapsed ~95%
-# of verdicts to UNSUPPORTED on real news corpora.
+# The configured similarity window is retained for legacy introspection.
+# Corpus checking uses its minimum for retrieval, not for deciding stance;
+# exact matches remain eligible and are deduplicated by article provenance.
 
 
 def near_window() -> tuple[float, float]:
@@ -87,16 +64,46 @@ class BandSpec(TypedDict, total=False):
     when: str
 
 
+class NLIConfiguration(TypedDict):
+    model: str
+    revision: str | None
+    confidence_min: float
+
+
+def nli_configuration() -> NLIConfiguration:
+    """Inspect configuration without importing or loading a model."""
+    settings = get_settings()
+    model = getattr(settings, "NLI_MODEL", DEFAULT_NLI_MODEL)
+    revision = getattr(settings, "NLI_MODEL_REVISION", None)
+    confidence_min = float(getattr(settings, "NLI_CONFIDENCE_MIN", 0.7))
+    if not isinstance(model, str) or not model.strip():
+        raise ValueError("NLI_MODEL must name a local model or cached model ID")
+    if not math.isfinite(confidence_min) or not 0 <= confidence_min <= 1:
+        raise ValueError("NLI_CONFIDENCE_MIN must be between 0 and 1")
+    return {
+        "model": model.strip(),
+        "revision": str(revision) if revision else None,
+        "confidence_min": confidence_min,
+    }
+
+
 class EngineConfig(TypedDict):
     """Machine-readable shape of `engine_config()` (the XAI contract)."""
 
     weights: dict[str, float]
     bands: list[BandSpec]
     near_similarity_window: dict[str, float]
-    strong_similarity_corroboration: float
+    similarity_role: str
+    corroboration_rule: str
     laplace_alpha_smoothing: float
     pooling: str
     disputed_rule: str
+    source_prior_policy: str
+    score_kind: str
+    method_version: str
+    nli: NLIConfiguration
+    stance_cache: dict[str, str | int | float]
+    warnings: list[str]
 
 
 def engine_config() -> EngineConfig:
@@ -107,13 +114,22 @@ def engine_config() -> EngineConfig:
     """
     win_min, win_max = near_window()
     bands: list[BandSpec] = [
-        BandSpec(threshold=t, band=b) for t, b in VERDICT_BANDS
+        BandSpec(
+            threshold=t,
+            band=b,
+            when=(
+                "explicit cross-domain entailment and no contradiction"
+                if b in SUPPORTED_BANDS or b == "WEAKLY_CORROBORATED"
+                else "no established support; absence of evidence is not falsity"
+            ),
+        )
+        for t, b in VERDICT_BANDS
     ]
     bands.append(
         BandSpec(
             threshold=DISPUTED_MAX_PROBABILITY,
             band="DISPUTED",
-            when="explicit NLI contradiction and p below this threshold",
+            when="explicit NLI contradiction and heuristic score below threshold",
         )
     )
     return {
@@ -129,73 +145,111 @@ def engine_config() -> EngineConfig:
             "min": win_min,
             "max": win_max,
         },
-        "strong_similarity_corroboration": get_settings().VERDICT_STRONG_SIMILARITY,
+        "similarity_role": "retrieval_only; minimum applied, exact matches eligible",
+        "corroboration_rule": "explicit entailment only; canonical duplicates and "
+        "same-domain repetition are not independent support",
         "laplace_alpha_smoothing": LAPLACE_ALPHA,
-        "pooling": "weighted log-odds (sum of w_i * logit(v_i), normalized)",
-        "disputed_rule": "DISPUTED requires an explicit NLI contradiction; "
-                         "low probability alone yields UNSUPPORTED",
+        "pooling": "hand-weighted log-odds transformed to an uncalibrated score",
+        "disputed_rule": "explicit contradiction and score below threshold; "
+        "otherwise contradiction yields UNRESOLVED",
+        "source_prior_policy": "neutral unless independently validated counts "
+        "and provenance are supplied; never self-verdicts",
+        "score_kind": SCORE_KIND,
+        "method_version": METHOD_VERSION,
+        "nli": nli_configuration(),
+        "stance_cache": {
+            "key": "SHA-256 of full ordered texts, model, revision and threshold",
+            "max_entries": STANCE_CACHE_MAX,
+            "ttl_seconds": STANCE_CACHE_TTL_SECONDS,
+        },
+        "warnings": [
+            "Scores are uncalibrated heuristics, not probabilities of truth.",
+            "Corpus-local textual agreement is not independent fact verification.",
+            "Different domains do not guarantee independent reporting.",
+        ],
     }
+
 
 LAPLACE_ALPHA = 4.0  # smoothing for outlet track record
 
 HEDGE_TERMS = (
-    "reportedly", "allegedly", "rumor", "rumour", "unconfirmed",
-    "sources say", "it is said", "claims", "supposedly", "appears to",
+    "reportedly",
+    "allegedly",
+    "rumor",
+    "rumour",
+    "unconfirmed",
+    "sources say",
+    "it is said",
+    "claims",
+    "supposedly",
+    "appears to",
 )
 SENSATION_TERMS = (
-    "shocking", "bombshell", "exposed", "conspiracy", "secret",
-    "they don't want you", "wake up", "mainstream media",
+    "shocking",
+    "bombshell",
+    "exposed",
+    "conspiracy",
+    "secret",
+    "they don't want you",
+    "wake up",
+    "mainstream media",
 )
 
 VERDICT_BANDS = (
-    (0.72, "SUPPORTED"),            # multiple independent outlets agree
+    (0.72, "SUPPORTED"),  # multiple independent outlets agree
     (0.55, "PARTIALLY_SUPPORTED"),  # some corroboration, thin
-    (0.38, "UNRESOLVED"),           # genuinely uncertain
+    (0.38, "UNRESOLVED"),  # genuinely uncertain
     (0.00, "WEAKLY_CORROBORATED"),  # below 0.38 but neighbours back it
-    (0.00, "UNSUPPORTED"),          # below 0.38, single-source / no support
+    (0.00, "UNSUPPORTED"),  # below 0.38, single-source / no support
 )
 
 # DISPUTED is an override rather than a threshold: band_for() only returns it
 # when an explicit NLI contradiction exists AND the probability is this low.
 DISPUTED_MAX_PROBABILITY = 0.45
 
-# Band vocabulary shared with scripts/run_verdicts.py so the outlet
-# track-record query can never drift from the labels the engine emits.
+# Legacy band vocabulary retained for callers and stored records.
 SUPPORTED_BANDS = ("SUPPORTED", "PARTIALLY_SUPPORTED")
 DISPUTED_BANDS = ("DISPUTED",)
 
 
-def band_for(p: float, has_contradiction: bool = False,
-             has_corroboration: bool = False) -> str:
-    """Final label. Key honesty rules:
-    - 'DISPUTED' requires REAL contradiction (an outlet asserting otherwise).
-    - Low probability without contradiction = 'UNSUPPORTED' (unverified
-      single-source), never 'disputed' — absence of evidence is not
-      evidence of absence."""
-    if has_contradiction and p < DISPUTED_MAX_PROBABILITY:
-        return "DISPUTED"
+def band_for(
+    p: float,
+    has_contradiction: bool = False,
+    has_corroboration: bool = False,
+) -> str:
+    """Gate legacy score bands on actual stance evidence, not style or cosine."""
+    if has_contradiction:
+        return "DISPUTED" if p < DISPUTED_MAX_PROBABILITY else "UNRESOLVED"
+    if not has_corroboration:
+        return "UNRESOLVED" if p >= 0.38 else "UNSUPPORTED"
     if p >= 0.72:
         return "SUPPORTED"
     if p >= 0.55:
         return "PARTIALLY_SUPPORTED"
     if p >= 0.38:
         return "UNRESOLVED"
-    if has_corroboration:
-        return "WEAKLY_CORROBORATED"
-    return "UNSUPPORTED"
+    return "WEAKLY_CORROBORATED"
+
+
+def canonical_domain(domain: str | None) -> str | None:
+    """Normalize host spelling without claiming registrable-domain independence."""
+    if not domain or not domain.strip():
+        return None
+    host = urlsplit(domain if "://" in domain else f"//{domain}").hostname
+    return host.lower().removeprefix("www.").rstrip(".") if host else None
 
 
 @dataclass
 class Signal:
     name: str
-    value: float          # normalised 0..1 where 1 pushes toward SUPPORTED
+    value: float  # normalised 0..1 where 1 pushes toward SUPPORTED
     weight: float
     detail: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
 class VerdictResult:
-    probability: float
+    probability: float  # Compatibility name for an uncalibrated heuristic score.
     band: str
     rationale: str
     evidence: dict[str, Any]
@@ -236,7 +290,18 @@ class VerdictEngine:
 
     @staticmethod
     def entity_signal(entities: list[dict[str, Any]]) -> Signal:
-        strong_types = {"PERSON", "ORG", "GPE", "LOC", "DATE", "CARDINAL", "MONEY", "QUANTITY", "TIME", "PERCENT"}
+        strong_types = {
+            "PERSON",
+            "ORG",
+            "GPE",
+            "LOC",
+            "DATE",
+            "CARDINAL",
+            "MONEY",
+            "QUANTITY",
+            "TIME",
+            "PERCENT",
+        }
         strong = sum(1 for e in entities if e.get("entity_type") in strong_types)
         total = len(entities)
 
@@ -260,32 +325,33 @@ class VerdictEngine:
     def corroboration_signal(
         neighbor_claims: list[dict[str, Any]],
         own_domain: str | None,
+        own_syndication_group: str | None = None,
     ) -> tuple[Signal, Signal]:
-        """Returns (corroboration, contradiction) signals.
-
-        neighbor_claims: rows of {domain, sim, nli} where nli in
-        {None, 'yes', 'no'} — stance of the neighbour toward this claim.
-        """
+        """Use canonical stance (or legacy yes/no), never similarity as support."""
         supporting_domains: set[str] = set()
         contradicting_domains: set[str] = set()
+        supporting_groups: set[str] = set()
+        contradicting_groups: set[str] = set()
+        seen_groups: set[str] = set()
         neutral_nearby = 0
-        strong_sim = get_settings().VERDICT_STRONG_SIMILARITY
+        own_domain = canonical_domain(own_domain)
 
         for nb in neighbor_claims:
-            dom = nb.get("domain")
+            dom = canonical_domain(nb.get("domain"))
+            group = nb.get("syndication_group")
             if not dom or dom == own_domain:
-                continue  # same-outlet repetition isn't independent
-            stance = nb.get("nli")
-            similarity = float(nb.get("sim") or 0.0)
-            if stance == "no":
+                continue
+            if group and (group == own_syndication_group or group in seen_groups):
+                continue
+            if group:
+                seen_groups.add(group)
+            stance = nb.get("stance", nb.get("nli"))
+            if stance in ("contradiction", "no"):
                 contradicting_domains.add(dom)
-            elif stance == "yes" or similarity >= strong_sim:
-                # Either the NLI model confirmed entailment, or the two
-                # sentences are near-identical paraphrases (>= the disclosed
-                # VERDICT_STRONG_SIMILARITY). Requiring FLAN-T5-base to
-                # pronounce "yes" on paraphrase pairs starved this signal and
-                # pushed the whole corpus to UNSUPPORTED.
+                contradicting_groups.add(group or f"domain:{dom}")
+            elif stance in ("entailment", "yes"):
                 supporting_domains.add(dom)
+                supporting_groups.add(group or f"domain:{dom}")
             else:
                 neutral_nearby += 1
 
@@ -303,7 +369,11 @@ class VerdictEngine:
             weight=W_CORROB,
             detail={
                 "independent_outlets_supporting": sorted(supporting_domains),
+                "supporting_syndication_groups": sorted(supporting_groups),
                 "nearby_unrelated": neutral_nearby,
+                "support_rule": "explicit_entailment_only",
+                "independence_disclosure": "distinct domains/groups are a proxy, "
+                "not proof of independent reporting",
             },
         )
         contradiction = Signal(
@@ -321,6 +391,7 @@ class VerdictEngine:
             weight=W_CONTRA,
             detail={
                 "outlets_contradicting": sorted(contradicting_domains),
+                "contradicting_syndication_groups": sorted(contradicting_groups),
                 "contradiction_ratio": round(contra_ratio, 3),
             },
         )
@@ -332,12 +403,29 @@ class VerdictEngine:
     def track_record_signal(
         outlet_stats: dict[str, Any] | None,
     ) -> Signal:
-        """Bayesian-smoothed historical support rate for the source outlet."""
-        if not outlet_stats:
-            return Signal("source_track_record", 0.5, W_TRACK, {"smoothed": True})
+        """Optional smoothed independent counts; self-derived priors are rejected."""
+        provenance = (outlet_stats or {}).get("provenance")
+        if (
+            not outlet_stats
+            or outlet_stats.get("independently_validated") is not True
+            or not isinstance(provenance, str)
+            or not provenance.strip()
+        ):
+            return Signal(
+                "source_track_record",
+                0.5,
+                W_TRACK,
+                {
+                    "prior_source": "neutral_no_independent_data",
+                    "disclosure": "Neutral prior; the engine's own labels are "
+                    "not outlet reliability evidence.",
+                },
+            )
 
-        sup = outlet_stats.get("supported", 0)
-        dis = outlet_stats.get("disputed", 0)
+        sup = float(outlet_stats.get("supported", 0))
+        dis = float(outlet_stats.get("disputed", 0))
+        if not all(math.isfinite(v) and v >= 0 for v in (sup, dis)):
+            raise ValueError("Independent outlet counts must be finite and nonnegative")
         n = sup + dis
         smoothed = (sup + LAPLACE_ALPHA * 0.5) / (n + LAPLACE_ALPHA)
         return Signal(
@@ -345,6 +433,10 @@ class VerdictEngine:
             value=round(smoothed, 3),
             weight=W_TRACK,
             detail={
+                "prior_source": "supplied_independent_data",
+                "provenance": provenance,
+                "disclosure": "Caller-supplied independent counts; provenance "
+                "has not been audited by GMEE.",
                 "outlet_supported_history": sup,
                 "outlet_disputed_history": dis,
                 "smoothing_alpha": LAPLACE_ALPHA,
@@ -356,17 +448,14 @@ class VerdictEngine:
 
     @staticmethod
     def combine(signals: list[Signal]) -> VerdictResult:
-        """Weighted log-odds pooling. Each signal contributes
-        w_i * logit(v_i); the pooled logit is squashed back through sigmoid.
-        Log-odds keeps extreme signals from dominating and mirrors how
-        independent evidence combines in naive-Bayes style fusion."""
+        """Hand-weighted pooling, followed by evidence-gated legacy bands."""
         num = 0.0
         den = 0.0
         for s in signals:
             v = min(max(s.value, 0.01), 0.99)
             num += s.weight * math.log(v / (1 - v))
             den += s.weight
-        p = 1 / (1 + math.exp(-num / den))
+        p = 1 / (1 + math.exp(-num / den)) if den else 0.5
         p = round(min(max(p, 0.02), 0.98), 4)
 
         contra = next((s for s in signals if s.name == "contradiction"), None)
@@ -374,29 +463,46 @@ class VerdictEngine:
         # The contradiction signal is neutral-centred (0.5 = no contradiction),
         # so DISPUTED is decided by the raw ratio carried in its detail.
         has_contra = bool(
-            contra
-            and float((contra.detail or {}).get("contradiction_ratio", 0.0)) > 0
+            contra and float((contra.detail or {}).get("contradiction_ratio", 0.0)) > 0
         )
-        has_corr = corr is not None and len(
-            (corr.detail or {}).get("independent_outlets_supporting", [])
-        ) > 0
+        has_corr = (
+            corr is not None
+            and len((corr.detail or {}).get("independent_outlets_supporting", [])) > 0
+        )
         band = band_for(p, has_contra, has_corr)
 
-        drivers = sorted(signals, key=lambda s: -(s.weight * abs(math.log(min(max(s.value, .01), .99) / 0.5))))
-        top = drivers[:2]
-        parts = []
-        for s in top:
-            arrow = "raises" if s.value >= 0.5 else "lowers"
-            parts.append(f"{s.name} {arrow} confidence ({s.value:.2f})")
-        rationale = (
-            f"P(supported)={p:.2f} [{band}]. "
-            f"Strongest factors: " + "; ".join(parts) + "."
-        )
+        def contribution(signal: Signal) -> float:
+            value = min(max(signal.value, 0.01), 0.99)
+            return abs(signal.weight * math.log(value / (1 - value)))
 
-        evidence = {
-            s.name: {"value": s.value, "weight": s.weight, **s.detail}
-            for s in signals
+        top = sorted(signals, key=contribution, reverse=True)[:2]
+        parts = [
+            f"{s.name} {'raises' if s.value >= 0.5 else 'lowers'} the score "
+            f"({s.value:.2f})"
+            for s in top
+        ]
+        rationale = f"Uncalibrated heuristic score={p:.2f} [{band}]."
+        if parts:
+            rationale += " Strongest factors: " + "; ".join(parts) + "."
+        if not has_corr:
+            rationale += " No cross-domain entailment established; this is not falsity."
+
+        evidence: dict[str, Any] = {
+            s.name: {"value": s.value, "weight": s.weight, **s.detail} for s in signals
         }
+        evidence.update(
+            {
+                "score_kind": SCORE_KIND,
+                "method_version": METHOD_VERSION,
+                "nli": nli_configuration(),
+                "warnings": [
+                    "The legacy probability field is an uncalibrated heuristic, "
+                    "not a probability of truth.",
+                    "Corpus-local textual stance is not independent fact verification.",
+                    "Language and entity signals cannot establish factual support.",
+                ],
+            }
+        )
         return VerdictResult(
             probability=p,
             band=band,
@@ -407,54 +513,178 @@ class VerdictEngine:
 
 # ------------------------------------------------------------- NLI stance
 
-_nli_tok = None
-_nli_mdl = None
+
+class NLIUnavailableError(RuntimeError):
+    """The configured local classifier cannot run; do not manufacture a stance."""
 
 
-def _load_nli() -> tuple[Any, Any]:
-    global _nli_tok, _nli_mdl
-    if _nli_mdl is None:
-        from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
+@dataclass(frozen=True)
+class StanceResult:
+    stance: Stance
+    abstention_reason: str | None = None
 
-        logger.info("Loading NLI model google/flan-t5-base …")
-        _nli_tok = AutoTokenizer.from_pretrained("google/flan-t5-base")
-        _nli_mdl = AutoModelForSeq2SeqLM.from_pretrained("google/flan-t5-base")
-        _nli_mdl.eval()
+
+_nli_tok: Any = None
+_nli_mdl: Any = None
+_nli_model_key: tuple[str, str | None] | None = None
+_nli_load_lock = Lock()
+_nli_inference_lock = Lock()
+
+
+def _load_nli(config: NLIConfiguration | None = None) -> tuple[Any, Any]:
+    """Lazy, cache-local loading: serving a check never downloads model weights."""
+    global _nli_tok, _nli_mdl, _nli_model_key
+    cfg = config or nli_configuration()
+    model_key = (cfg["model"], cfg["revision"])
+    with _nli_load_lock:
+        if _nli_mdl is None or _nli_model_key != model_key:
+            try:
+                from transformers import (
+                    AutoModelForSequenceClassification,
+                    AutoTokenizer,
+                )
+
+                kwargs: dict[str, Any] = {"local_files_only": True}
+                if cfg["revision"]:
+                    kwargs["revision"] = cfg["revision"]
+                logger.info("Loading cached three-class NLI model %s", cfg["model"])
+                tok = AutoTokenizer.from_pretrained(cfg["model"], **kwargs)
+                mdl = AutoModelForSequenceClassification.from_pretrained(
+                    cfg["model"], **kwargs
+                )
+                mdl.eval()
+            except Exception as exc:
+                raise NLIUnavailableError(
+                    f"NLI model '{cfg['model']}' is unavailable. Install the local "
+                    "transformers/PyTorch/tokenizer dependencies and pre-cache the "
+                    "configured model and NLI_MODEL_REVISION, or set NLI_MODEL to "
+                    "a compatible local three-class NLI model directory. "
+                    "Request-time model downloads are disabled."
+                ) from exc
+            _nli_tok, _nli_mdl, _nli_model_key = tok, mdl, model_key
     return _nli_tok, _nli_mdl
 
 
-STANCE_CACHE: dict[str, str] = {}
-# Bounded memo: one entry per (claim, neighbour) pair would grow without limit
-# in a long-running API process. Clearing at the cap is enough — the cache is a
-# latency optimisation, never a source of truth.
-STANCE_CACHE_MAX = 20_000
+def _label_mapping(config: Any) -> dict[int, Stance] | None:
+    """Require an explicit complete semantic mapping; LABEL_0 is not a stance."""
+    mappings = [getattr(config, "id2label", {})]
+    label2id = getattr(config, "label2id", {})
+    if isinstance(label2id, dict):
+        mappings.append({index: label for label, index in label2id.items()})
+    for mapping in mappings:
+        if not isinstance(mapping, dict):
+            continue
+        parsed: dict[int, Stance] = {}
+        for index, label in mapping.items():
+            normalized = str(label).strip().lower()
+            if normalized not in ("entailment", "contradiction", "neutral"):
+                break
+            try:
+                idx = int(index)
+            except (ValueError, TypeError):
+                break
+            if normalized == "entailment":
+                parsed[idx] = "entailment"
+            elif normalized == "contradiction":
+                parsed[idx] = "contradiction"
+            else:
+                parsed[idx] = "neutral"
+        else:
+            if set(parsed) == {0, 1, 2} and set(parsed.values()) == {
+                "entailment",
+                "contradiction",
+                "neutral",
+            }:
+                return parsed
+    return None
 
 
-async def nli_stance(claim_text: str, other_text: str) -> str:
-    """'yes' if other_text supports claim_text, 'no' if it contradicts,
-    'neutral' otherwise. Batch-of-one wrapper around flan-t5 NLI."""
-    key = f"{claim_text[:120]}||{other_text[:120]}"
-    if key in STANCE_CACHE:
-        return STANCE_CACHE[key]
+def _run_nli(
+    claim_text: str, other_text: str, config: NLIConfiguration
+) -> StanceResult:
+    if not claim_text.strip() or not other_text.strip():
+        return StanceResult("neutral", "empty_input")
+    try:
+        tok, mdl = _load_nli(config)
+        labels = _label_mapping(mdl.config)
+        if labels is None or getattr(mdl.config, "num_labels", 3) != 3:
+            return StanceResult("neutral", "unknown_label_mapping")
 
-    import asyncio
-
-    def _run() -> str:
         import torch
 
-        tok, mdl = _load_nli()
-        prompt = (
-            f"premise: {other_text[:300]} hypothesis: {claim_text[:300]} "
-            f"Does the premise entail the hypothesis?"
-        )
-        inputs = tok(prompt, return_tensors="pt", truncation=True, max_length=512)
-        with torch.no_grad():
-            out = mdl.generate(**inputs, max_new_tokens=3, do_sample=False)
-        ans = tok.batch_decode(out, skip_special_tokens=True)[0].strip().lower()
-        return "yes" if ans == "yes" else ("no" if ans == "no" else "neutral")
+        # The premise is the evidence, the hypothesis is the checked claim.
+        # Never silently drop a late negation or qualifier to fit the context.
+        inputs = tok(other_text, claim_text, return_tensors="pt", truncation=False)
+        context_limit = 512
+        for limit in (
+            getattr(tok, "model_max_length", 512),
+            getattr(mdl.config, "max_position_embeddings", 512),
+        ):
+            if isinstance(limit, int) and 0 < limit < context_limit:
+                context_limit = limit
+        if inputs["input_ids"].shape[-1] > context_limit:
+            return StanceResult("neutral", "input_exceeds_model_context")
+        with _nli_inference_lock, torch.inference_mode():
+            logits = mdl(**inputs).logits
+            if tuple(logits.shape) != (1, 3):
+                return StanceResult("neutral", "invalid_model_scores")
+            scores = torch.softmax(logits, dim=-1)[0]
+            if not bool(torch.isfinite(scores).all().item()):
+                return StanceResult("neutral", "invalid_model_scores")
+            confidence, index = scores.max(dim=0)
+        if float(confidence.item()) < config["confidence_min"]:
+            return StanceResult("neutral", "low_confidence")
+        return StanceResult(labels[int(index.item())])
+    except NLIUnavailableError:
+        raise
+    except Exception as exc:
+        raise NLIUnavailableError(
+            "Local NLI inference failed. Check NLI_MODEL/NLI_MODEL_REVISION, "
+            "the three-class model files and PyTorch/tokenizer dependencies."
+        ) from exc
 
-    result = await asyncio.to_thread(_run)
-    if len(STANCE_CACHE) >= STANCE_CACHE_MAX:
-        STANCE_CACHE.clear()
-    STANCE_CACHE[key] = result
+
+STANCE_CACHE: OrderedDict[str, tuple[float, StanceResult]] = OrderedDict()
+STANCE_CACHE_MAX = 20_000
+STANCE_CACHE_TTL_SECONDS = 900.0
+
+
+async def classify_stance(claim_text: str, other_text: str) -> StanceResult:
+    """Canonical three-way stance with a bounded, full-text, configuration-keyed memo."""
+    try:
+        config = nli_configuration()
+    except (TypeError, ValueError) as exc:
+        raise NLIUnavailableError(f"Invalid local NLI configuration: {exc}") from exc
+    key = hashlib.sha256(
+        json.dumps(
+            [METHOD_VERSION, config, claim_text, other_text],
+            ensure_ascii=False,
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+    cached = STANCE_CACHE.get(key)
+    if cached:
+        if monotonic() - cached[0] < STANCE_CACHE_TTL_SECONDS:
+            STANCE_CACHE.move_to_end(key)
+            return cached[1]
+        del STANCE_CACHE[key]
+    result = await asyncio.to_thread(_run_nli, claim_text, other_text, config)
+    if STANCE_CACHE_MAX > 0:
+        while len(STANCE_CACHE) >= STANCE_CACHE_MAX:
+            STANCE_CACHE.popitem(last=False)
+        STANCE_CACHE[key] = (monotonic(), result)
     return result
+
+
+async def nli_stance(claim_text: str, other_text: str) -> LegacyStance:
+    """Compatibility: yes=entailment, no=contradiction, neutral=abstention/neutral.
+
+    A failure to entail is NOT a contradiction. No generative yes/no prompt is
+    used, and unavailable models raise an actionable error rather than guess.
+    """
+    result = await classify_stance(claim_text, other_text)
+    if result.stance == "entailment":
+        return "yes"
+    if result.stance == "contradiction":
+        return "no"
+    return "neutral"

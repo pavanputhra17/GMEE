@@ -1,73 +1,121 @@
-# GMEE Algorithmic & Hardware Limitations
+# GMEE Limitations & Failure Boundaries
 
-This document provides a transparent and rigorous technical accounting of the architectural boundaries, algorithmic trade-offs, heuristic approximations, and hardware constraints inherent in the Global Misinformation Early-Warning Engine (GMEE).
+GMEE is a research prototype. Engineering hardening, typed APIs and an evaluation
+harness do not establish factual accuracy, novelty, calibrated truth odds, an
+SLO or production readiness. Controlled research, load and restore experiments
+remain **UNPERFORMED**; see [Research](RESEARCH.md) and [Audit](AUDIT.md).
 
----
+## Similarity, stance and corpus coverage
 
-## 1. Algorithmic Bounds & Heuristics
+- all-mpnet-base-v2's 768-d vectors retrieve semantic neighbors. Cosine is not
+  a probability, event identity, independent corroboration or evidence of truth.
+  Threshold windows are settings/heuristics, not validated universal boundaries.
+- Same named entities can appear in different events; high similarity can coexist
+  with contradictory numbers, negation, time scope or attribution. Low similarity
+  can miss valid paraphrases. Candidate limits and approximate indexes can omit
+  relevant passages; retrieval recall needs a separately labeled universe.
+- Local NLI/stance checks operate on text and can fail on quotations, satire,
+  hedging, context, units, dates, negation, long/truncated passages and reporting
+  about assertions. They must return/disclose unavailable/neutral states rather
+  than convert model failure into contradiction.
+- Corpus-local checking is not live web search and never proves exhaustive
+  absence. `INSUFFICIENT_EVIDENCE` is abstention, not falsehood. Unsupported legacy
+  bands are not ground-truth labels; source reputation/linguistic style cannot
+  serve as substitutes for cited evidence.
+- Different domains do not prove independent reporting. Canonical/content
+  grouping reduces duplicate inflation but cannot resolve all syndication or
+  coordinated stories. A widely copied false statement may still be corroborated
+  by the corpus. Duplicate/independence limitations must be visible to users.
+- Current default language/model choices are English-oriented. Cross-language or
+  model swaps require versioned re-embedding and validation; equal dimensionality
+  does not make two embedding spaces interchangeable.
 
-### 1.1 Vector Similarity & Threshold Window
-- **Embedding Space:** GMEE relies on `sentence-transformers/all-mpnet-base-v2` producing dense 768-dimensional normalized vector embeddings.
-- **Near-Neighbor Window (`VERDICT_NEAR_MIN=0.60`, `VERDICT_NEAR_MAX=0.97`):**
-  - Cross-outlet reporting of identical real-world events rarely matches verbatim phrasing. Semantic similarity between legitimate independent articles typically occupies the `0.55–0.75` cosine band.
-  - Setting a threshold above `0.80` causes catastrophic false-negative rates in corroboration discovery (collapsing over 90% of claims to `UNSUPPORTED`).
-  - Conversely, an upper bound of `0.97` excludes exact duplicate syndications or scraping clones to prevent artificial corroboration inflation.
-- **Topological Edge Truncation:**
-  - Graph edge construction in Neo4j caps neighbors per article at `TOP_K=3` with a threshold cutoff ($\ge 0.82$) to keep relationship graph density manageable ($O(N \cdot K)$ rather than $O(N^2)$).
+## Typed mutation and graph inference
 
-### 1.2 Natural Language Inference (NLI) Stance Verification
-- **Model:** `google/flan-t5-base` wrapped as a sequence-to-sequence entailment classifier.
-- **Prompt Formulation:** `"premise: <neighbor_text> hypothesis: <claim_text> Does the premise entail the hypothesis?"`
-- **Output Classes:** Truncated beam generation checking for exact tokens `yes` (entailment), `no` (contradiction), or `neutral`.
-- **Heuristic Caveats:**
-  - `flan-t5-base` (~250M parameters) can miss subtle irony, satirical phrasing, hyperbole, or nuanced temporal conditionality ("The minister said X on Monday, but reversed it on Tuesday").
-  - Token input truncation is enforced at 512 tokens (with hypothesis/premise strings clipped at 300 characters), which may lose qualifying subordinate clauses at the ends of long journalistic sentences.
+- Typed rules expose numeric/entity/hedging/polarity/framing/wording differences
+  and offsets, not a semantic proof that misinformation evolved. Legitimate
+  correction, evolving evidence or a changed quote can produce the same types.
+- Publication/extraction times can be missing, corrected or unreliable. Order
+  must be unknown/reversed when appropriate; an older item is not automatically
+  the source of a newer item. Graph adjacency, scoop timing and simulations are
+  not observed copying, influence or causal diffusion.
+- A one-parent constraint makes the candidate graph structurally consistent;
+  it does not establish that the chosen parent is correct. `gmee01` refuses
+  conflicting historical parents rather than silently erasing history. Legacy
+  NULL evidence remains unverified until explicitly reanalyzed.
+- Clustering changes as the corpus grows. Cluster IDs are not frozen event IDs.
+  Bounded graph traversal/node/edge limits may omit relationships and must be
+  reported; Neo4j mirrors can lag authoritative PostgreSQL state.
+- Text comparison returns `observed_propagation: false`. Simulation outputs are
+  hypothetical under supplied assumptions, not forecasts validated on diffusion
+  observations. Mutation accuracy requires independent type/span gold, separate
+  from binary relatedness labels.
 
-### 1.3 Probabilistic Verdict Scoring Model
-- **Non-Binary Truth Philosophy:** GMEE never issues absolute verdicts ("TRUE" or "FALSE"). It outputs a Bayesian posterior probability $P(\text{supported} \mid \text{evidence}) \in [0, 1]$.
-- **Signal Weighting:**
-  $$\text{Score} = 0.40 \cdot S_{\text{corrob}} + 0.20 \cdot S_{\text{contra}} + 0.15 \cdot S_{\text{track}} + 0.15 \cdot S_{\text{entity}} + 0.10 \cdot S_{\text{language}}$$
-- **Disputed Override Rule:** `DISPUTED` is an explicit override, not a mere numerical probability band. It strictly requires an observed NLI contradiction *and* $P(\text{supported}) < 0.45$.
-- **Cold-Start Bias in Source Priors:**
-  - An outlet's prior starts at a neutral prior ($0.50$). While Bayesian Laplace smoothing prevents single articles from skewing an outlet to $0.0$ or $1.0$, outlets with sparse historical data will reflect this uninformative prior.
+## Scores, annotation and evaluation
 
-### 1.4 Evolution & Mutation Tracking
-- **Graph Lineage Diffs:** Claim evolution is tracked through word-level Myers diffing and timestamp sequencing across `EVOLVED_FROM` relationships.
-- **Assumed Temporal Lineage:** If two claims match above threshold and originate from different timestamps, the older claim is hypothesized as the parent. In breaking news, earlier reporting can often be less accurate than subsequent retractions, leading to inverted directionality in narrative authority.
-- **Clustering Debounce & Scale:** HDBSCAN and topic-clustering jobs are debounced (`force=false`) to avoid thrashing on high-frequency streaming ingest. Minimum corpus size guards require sufficient claim density before triggering cluster re-partitioning.
+- Live verdict scoring is an **uncalibrated heuristic**, not a Bayesian posterior
+  or a probability of truth. Source/style factors have bias and feedback-loop
+  risks. A future calibrated relatedness score would answer a different target.
+- Automatic NLI/entity/lexical labels are weak diagnostics, not three independent
+  humans. Bucket-dependent annotators can be circular; majority agreement does
+  not repair leakage. Historical publication reports remain exploratory.
+- A typed label API and server user ID improve provenance, but authentication
+  does not prove independent judgments, annotator expertise or correct labels.
+  Conservatively preserve human/automatic/legacy/test origins and revisions.
+- Stratified similarity sampling changes class prevalence. Pair counts can be
+  inflated by shared claims/articles/events; resample and split at appropriate
+  event/components, not independent-row assumptions. No fixed number of labels
+  automatically gives statistical significance or a publication-grade benchmark.
+- Train/dev/test event identity, duplicate grouping, frozen text/model hashes,
+  label independence, rights and untouched test use require review. Seeds alone
+  are not reproducibility; test-optimized best-F1 is an optimistic diagnostic.
+- Missing class/type support makes some metrics undefined. Report unavailability,
+  uncertainty and negative findings rather than manufacturing numeric results.
 
----
+## Resource and operational limits
 
-## 2. Hardware Boundaries & Resource Footprint
+No CPU/GPU throughput, model RSS, search p95, graph latency, fleet capacity or
+restore-time benchmark is asserted here. Historical anecdotal timings/counts do
+not establish reproducible measurements on this upgrade.
 
-### 2.1 CPU vs. GPU Inference
-- **Embedding Generation (`all-mpnet-base-v2`):**
-  - Requires ~420MB RAM for model weights.
-  - On a modern multi-core CPU (AVX2), embedding throughput averages 30–50 claims/sec.
-  - On an NVIDIA GPU (CUDA), throughput reaches 400–600 claims/sec.
-- **NLI Stance Scoring (`flan-t5-base`):**
-  - Model weights occupy ~990MB memory.
-  - Autoregressive text generation without batched GPU inference takes ~80–120ms per pair on CPU. Batching and in-memory stance caching (`STANCE_CACHE`) are used to protect live request latency.
-- **NER Extraction (`spaCy en_core_web_sm`):**
-  - Lightweight CPU pipeline (~15MB RAM), parsing claims in sub-millisecond durations.
+- One API worker avoids duplicate ML weights; lazy model loading reduces boot
+  work but moves download/warm-up cost to first use. A first model load may exceed
+  HTTP budgets or memory on small/free-tier hosts; cache/library/BLAS/thread
+  overhead and concurrent jobs need actual RSS/latency measurements.
+- Body, candidate, graph and request timeouts bound some work, not all resource
+  contention. Async I/O and thread offloading do not make CPU inference free or
+  guarantee event-loop responsiveness. Heavy work should be observable jobs.
+- Finite Redis election TTLs do not guarantee single execution. Durable ownership
+  needs renewal/fencing, crash recovery, cancellation/retry and concurrent-trigger
+  validation; no exactly-once or HA claim follows from a lock or a job table.
+- Redis outage affects revocation/rate limiting/coordination; behavior must be
+  explicitly checked. Readiness checks stores, not all models, all providers,
+  future resource availability or restore viability.
+- Migration-first startup fails closed but can hold DDL locks or reject historical
+  conflicts. It needs an isolated restored-snapshot rehearsal and maintenance
+  plan. Multi-replica rollout requires one coordinated migration phase.
+- The Compose baseline has no TLS gateway, public database access, validated
+  multi-host topology or managed secret rotation. Render's free plan remains a
+  demo option, not an inference capacity promise.
+- A successful `pg_dump` exit/header is not full recovery. The helper produces a
+  sensitive unencrypted PostgreSQL archive; actual isolated restore/integrity,
+  Neo4j rebuild/backup and Redis security-state policy remain operator gates.
 
-### 2.2 Storage & Index Scaling (PostgreSQL / pgvector / Neo4j)
-- **HNSW Index Parameters:**
-  - `claims_embedding_hnsw_cosine_idx` uses standard HNSW graph construction (`m=16`, `ef_construction=64`).
-  - While lookup latency is typically 5–15ms for $K=10$, building and updating HNSW graphs under heavy concurrent write loads consumes significant CPU and RAM.
-- **Memory Consumption:**
-  - PostgreSQL 16: Minimum 2GB RAM recommended for active working buffers and pgvector maintenance.
-  - Neo4j 5: Heap and pagecache recommended minimum 2GB RAM for graphs up to $100\text{k}$ nodes and $500\text{k}$ edges.
-  - Redis 7: Operational memory footprint stays under 50MB for session caches and rate limiters.
-- **Total Local Deployment Minimums:**
-  - **RAM:** 8GB minimum, 16GB recommended (to comfortably host PostgreSQL, Neo4j, Redis, and PyTorch models simultaneously).
-  - **Disk:** 20GB SSD storage for database volumes and PyTorch Hugging Face cache.
+## Security, legal and user-facing boundaries
 
----
+nginx CSP/proxy header replacement/peer allowlists reduce attack surface but are
+not a penetration test. TLS scheme/client identity across an external gateway
+requires known-peer configuration; wildcard raw XFF trust permits spoofing. Inline
+React styles remain allowed; XSS/session storage, role provisioning, audit/log
+privacy, least-privilege DB roles and dependency/model supply chain need review.
 
-## 3. Epistemic & Operating Constraints
+Repository MIT licensing is not permission to redistribute ingested articles,
+Reddit posts, annotations or model weights. Store per-source terms/provenance,
+consent/retention/takedown obligations and data-release permissions. Provider keys
+also create quota/cost and text-sharing/privacy implications.
 
-1. **Language Scope:** Current production pipeline models (`all-mpnet-base-v2`, `flan-t5-base`, `en_core_web_sm`) are optimized for English-language text. Ingested non-English documents are filtered out during preprocessing (`skipped_non_english`).
-2. **Corroboration vs. Truth:** A falsehood amplified identically by ten syndicated outlets will register high corroboration scores ($S_{\text{corrob}}$). The engine mitigates this via domain-level deduplication and historical outlet track records, but coordinated multi-outlet disinformation campaigns remain an adversarial threat vector.
-3. **Evaluation Sample Size:** The gold-standard evaluation harness (`eval_report.json`) computes rigorous statistical metrics (AUROC bootstrap CIs, McNemar tests, ECE), but requires $\ge 100$ human consensus labels before results reach full statistical significance.
-
+Clearly labeled simulation is useful for a UI demo but never readiness, real
+citations, human labels or model performance. HTTP shape/auth smoke cannot prove
+browser behavior, accessibility, scientific accuracy or production safety. Keep
+[engineering/product/research acceptance](AUDIT.md) separate and open until the
+corresponding evidence is attached.

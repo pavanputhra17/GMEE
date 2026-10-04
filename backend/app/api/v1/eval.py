@@ -1,237 +1,235 @@
-"""Gold-standard claim-pair labeling API.
+"""Authenticated, blinded annotation; admin-only scored research snapshots."""
 
-Design principle: ANNOTATOR BLINDING. `GET /eval/next` deliberately omits the
-stored similarity score, bucket, engine verdicts and NLI stances — the
-annotator judges only the two claim texts. Biased labeling is worse than no
-labeling, and the blind is enforced by a test (tests/test_eval_api.py).
-"""
+from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
-from typing import Any
+from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
+from sqlalchemy import exists, func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
+
+from app.api.deps import get_current_user, get_db_session, require_role
+from app.models.article import Article
+from app.models.claim import Claim
+from app.models.eval import EvalPair, EvalPairLabel
+from app.models.user import RoleEnum, User
+from app.services.eval.dataset import (
+    DatasetError,
+    build_export,
+    collect_export_records,
+    collect_pair_metadata,
+    lock_pair_writes,
+    snapshot_session,
+    validate_assignments,
+    vote_record,
+)
+from app.services.eval.progress import build_progress, per_annotator
+from app.services.eval.provenance import LABELS
+from app.services.eval.report import ENGINE_OPERATING_POINT
 
 router = APIRouter()
+VALID_LABELS = LABELS
+Label = Literal["SAME_STORY", "EVOLVED", "DISTINCT"]
+Split = Literal["unassigned", "train", "dev", "test"]
+AssignedSplit = Literal["train", "dev", "test"]
+MutationType = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=64)]
 
-VALID_LABELS = ("SAME_STORY", "EVOLVED", "DISTINCT")
 
-_PAIR_SQL = """
-SELECT p.id::text AS id, p.bucket AS bucket,
-       ta.claim_text AS text_a, da.domain AS domain_a,
-       tb.claim_text AS text_b, db.domain AS domain_b
-FROM eval_pairs p
-JOIN claims ta ON ta.id = p.claim_a_id
-JOIN articles da ON da.id = ta.article_id
-JOIN claims tb ON tb.id = p.claim_b_id
-JOIN articles db ON db.id = tb.article_id
-"""
+class BlindedClaim(BaseModel):
+    text: str
+    domain: str | None
+
+
+class BlindedPair(BaseModel):
+    pair_id: uuid.UUID
+    a: BlindedClaim
+    b: BlindedClaim
+
+
+class NextPairResponse(BaseModel):
+    done: bool
+    pair: BlindedPair | None
 
 
 def _blinded(row: Any) -> dict[str, Any]:
-    """Strip every cue except the raw claim texts + outlet domains."""
-    return {
-        "pair_id": row.id,
-        "a": {"text": row.text_a, "domain": row.domain_a},
-        "b": {"text": row.text_b, "domain": row.domain_b},
-    }
+    return {"pair_id": str(row.id), "a": {"text": row.text_a, "domain": row.domain_a}, "b": {"text": row.text_b, "domain": row.domain_b}}
 
 
 def _per_annotator(rows: Any) -> dict[str, Any]:
-    """Aggregate (annotator, label, n) rows into per-annotator tallies.
-
-    An annotator normally holds more than one label, so the labels must be
-    nested — flattening to a single ``{label, count}`` silently discarded every
-    vote but the last one returned by the GROUP BY.
-    """
-    out: dict[str, Any] = {}
-    for annotator, label, n in rows:
-        entry = out.setdefault(annotator, {"labels": {}, "total": 0})
-        entry["labels"][label] = entry["labels"].get(label, 0) + n
-        entry["total"] += n
-    return out
+    return per_annotator(rows)
 
 
-@router.get("/next")
-async def next_pair(annotator: str = "anon", limit_scan: int = 50) -> dict[str, Any]:
-    """Next pair this annotator hasn't labeled yet — blinded."""
-    from sqlalchemy import text
-
-    from app.db.postgres import async_session_maker
-
-    if not annotator or len(annotator) > 64:
-        raise HTTPException(status_code=400, detail="annotator must be 1-64 chars")
-
-    async with async_session_maker() as db:
-        # lowest ids first for a stable, complete coverage order
-        rows = (
-            await db.execute(
-                text(
-                    _PAIR_SQL
-                    + """
-                    WHERE NOT EXISTS (
-                        SELECT 1 FROM eval_pair_labels l
-                        WHERE l.pair_id = p.id AND l.annotator = :ann
-                    )
-                    ORDER BY p.sampled_at ASC, p.id ASC
-                    LIMIT :scan
-                    """
-                ),
-                {"ann": annotator, "scan": max(1, min(limit_scan, 200))},
-            )
-        ).all()
-        rows = list(rows)  # `.all()` returns a Sequence; sorting needs a list
-
-        # prefer cross-outlet pairs first: they carry the most information
-        rows.sort(key=lambda r: (r.domain_a == r.domain_b,))
-
-    if not rows:
-        return {"done": True, "pair": None}
-    return {"done": False, "pair": _blinded(rows[0])}
+@router.get("/next", response_model=NextPairResponse)
+async def next_pair(
+    split: Split = "unassigned",
+    strategy: Literal["coverage", "uncertainty"] = "coverage",
+    annotator: str | None = Query(default=None, max_length=64, deprecated=True, description="Ignored; the authenticated user is the annotator"),
+    limit_scan: int = Query(default=50, ge=1, le=200, deprecated=True, description="Ignored; selection is performed deterministically in SQL"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    """Uncertainty is score proximity for train only, not probability entropy."""
+    if strategy == "uncertainty" and split != "train":
+        raise HTTPException(status_code=422, detail="strategy=uncertainty requires split=train; unassigned/dev/test always use fixed coverage")
+    ca, cb = aliased(Claim), aliased(Claim)
+    aa, ab = aliased(Article), aliased(Article)
+    identity = f"user:{current_user.id}"
+    already_labeled = exists().where(
+        EvalPairLabel.pair_id == EvalPair.id,
+        EvalPairLabel.origin == "human",
+        EvalPairLabel.annotator_user_id == current_user.id,
+        EvalPairLabel.annotator == identity,
+    )
+    statement = (
+        select(EvalPair.id.label("id"), ca.claim_text.label("text_a"), cb.claim_text.label("text_b"), aa.domain.label("domain_a"), ab.domain.label("domain_b"))
+        .join(ca, ca.id == EvalPair.claim_a_id).join(cb, cb.id == EvalPair.claim_b_id)
+        .join(aa, aa.id == ca.article_id).join(ab, ab.id == cb.article_id)
+        .where(EvalPair.split == split, ~already_labeled)
+    )
+    if strategy == "uncertainty":
+        statement = statement.order_by(func.abs(EvalPair.sim_score - ENGINE_OPERATING_POINT))
+    statement = statement.order_by(EvalPair.sampled_at, EvalPair.id).limit(1)
+    row = (await db.execute(statement)).first()
+    return {"done": row is None, "pair": _blinded(row) if row is not None else None}
 
 
 class EvalLabelBody(BaseModel):
-    pair_id: str = Field(min_length=32, max_length=36)
-    annotator: str = Field(min_length=1, max_length=64)
-    label: str = Field(pattern="^(SAME_STORY|EVOLVED|DISTINCT)$")
+    model_config = ConfigDict(extra="forbid")
+    pair_id: uuid.UUID
+    label: Label
+    annotator: str | None = Field(default=None, min_length=1, max_length=64, deprecated=True, description="Ignored; never grants another annotator's identity")
+    mutation_types: list[MutationType] | None = Field(default=None, max_length=16)
+    notes: str | None = Field(default=None, max_length=2000)
+
+    @field_validator("mutation_types")
+    @classmethod
+    def normalize_mutations(cls, value: list[str] | None) -> list[str] | None:
+        return sorted(set(value)) if value is not None else None
 
 
 @router.post("/label", status_code=201)
-async def label_pair(body: EvalLabelBody) -> dict[str, Any]:
-    """Record (or update) this annotator's label for a pair."""
-    from sqlalchemy import text
-    from sqlalchemy.dialects.postgresql import insert as pg_insert
-
-    from app.db.postgres import async_session_maker
-    from app.models.eval import EvalPairLabel
-
-    try:
-        pid = uuid.UUID(body.pair_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail="pair_id must be a UUID") from exc
-
-    async with async_session_maker() as db:
-        exists = (
-            await db.execute(
-                text("SELECT 1 FROM eval_pairs WHERE id = CAST(:pid AS uuid)"),
-                {"pid": body.pair_id},
-            )
-        ).first()
-        if exists is None:
-            raise HTTPException(status_code=404, detail="pair not found")
-
-        stmt = pg_insert(EvalPairLabel).values(
-            pair_id=pid,
-            annotator=body.annotator,
-            label=body.label,
+async def label_pair(
+    body: EvalLabelBody,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    """One current human vote per user; prior revisions/other origins survive."""
+    pair = (await db.execute(select(EvalPair.id).where(EvalPair.id == body.pair_id).with_for_update())).first()
+    if pair is None:
+        raise HTTPException(status_code=404, detail="pair not found")
+    identity = f"user:{current_user.id}"
+    vote = (await db.execute(select(EvalPairLabel).where(
+        EvalPairLabel.pair_id == body.pair_id,
+        EvalPairLabel.annotator == identity,
+        EvalPairLabel.origin == "human",
+    ).with_for_update())).scalar_one_or_none()
+    now = datetime.now(UTC)
+    if vote is None:
+        vote = EvalPairLabel(
+            pair_id=body.pair_id, annotator=identity, annotator_user_id=current_user.id,
+            origin="human", label=body.label, mutation_types=body.mutation_types,
+            notes=body.notes, created_at=now, updated_at=now,
+            provenance={"method": "authenticated_eval_api_v1", "identity_source": "get_current_user"},
         )
-        stmt = stmt.on_conflict_do_update(
-            constraint="uq_eval_label_pair_annotator",
-            set_={"label": stmt.excluded.label, "created_at": datetime.now(UTC)},
-        )
-        await db.execute(stmt)
-        await db.commit()
-
-    return {"status": "recorded", "pair_id": body.pair_id, "label": body.label}
-
-
-@router.get("/report")
-async def eval_report() -> dict[str, Any]:
-    """Publication metrics over consensus labels.
-
-    AUROC with bootstrap CI, best-F1, F1 at the engine operating point, Brier
-    score, expected calibration error, reliability bins, a threshold sweep and
-    pairwise McNemar significance — plus an explicit warning while the sample is
-    too small to conclude anything. Pure metrics live in
-    `services/eval/metrics.py`; assembly in `services/eval/report.py`.
-    """
-    from app.db.postgres import async_session_maker
-    from app.services.eval.report import build_report, collect_labeled_pairs
-
-    async with async_session_maker() as db:
-        rows = await collect_labeled_pairs(db)
-    return build_report(rows)
+        db.add(vote)
+    else:
+        if vote.annotator_user_id != current_user.id:
+            raise HTTPException(status_code=409, detail="Stored human identity is inconsistent; retain the historical row and resolve its provenance before editing")
+        mutations = body.mutation_types if "mutation_types" in body.model_fields_set else vote.mutation_types
+        notes = body.notes if "notes" in body.model_fields_set else vote.notes
+        if (vote.label, vote.mutation_types, vote.notes) != (body.label, mutations, notes):
+            previous = vote_record(vote)
+            previous.pop("history")
+            vote.history = [*(vote.history or []), previous]
+            vote.label, vote.mutation_types, vote.notes = body.label, mutations, notes
+            vote.updated_at = now
+    await db.flush()
+    response = {"status": "recorded", "pair_id": str(body.pair_id), "label": vote.label, "annotator": identity, "origin": "human", "mutation_types": vote.mutation_types, "notes": vote.notes}
+    await db.commit()
+    return response
 
 
 @router.get("/progress")
-async def progress() -> dict[str, Any]:
-    """Labeling coverage + inter-annotator agreement (Cohen's kappa)."""
-    from collections import defaultdict
+async def progress(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    pairs = [dict(r._mapping) for r in (await db.execute(select(EvalPair.id.label("pair_id"), EvalPair.bucket, EvalPair.split).order_by(EvalPair.id))).all()]
+    votes = [vote_record(v) for v in (await db.execute(select(EvalPairLabel).order_by(EvalPairLabel.pair_id, EvalPairLabel.origin, EvalPairLabel.annotator))).scalars()]
+    return build_progress(pairs, votes)
 
-    from sqlalchemy import text
 
-    from app.db.postgres import async_session_maker
-    from app.services.eval.metrics import cohen_kappa
+@router.get("/report")
+async def eval_report(
+    current_user: User = Depends(require_role(RoleEnum.admin)),
+    db: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    """Live-corpus diagnostics only; not a frozen held-out publication result."""
+    from app.services.eval.report import build_report, collect_labeled_pairs
 
-    async with async_session_maker() as db:
-        by_bucket = (
-            await db.execute(
-                text(
-                    """
-                    SELECT p.bucket,
-                           count(DISTINCT p.id) AS pairs,
-                           count(DISTINCT l.pair_id) AS labeled
-                    FROM eval_pairs p
-                    LEFT JOIN eval_pair_labels l ON l.pair_id = p.id
-                    GROUP BY p.bucket ORDER BY p.bucket
-                    """
-                )
-            )
-        ).all()
-        per_annotator = (
-            await db.execute(
-                text(
-                    """
-                    SELECT annotator, label, count(*) AS n
-                    FROM eval_pair_labels GROUP BY 1, 2 ORDER BY 1, 2
-                    """
-                )
-            )
-        ).all()
-        label_matrix = (
-            await db.execute(
-                text(
-                    """
-                    SELECT pair_id::text AS pid, annotator, label
-                    FROM eval_pair_labels ORDER BY pair_id, annotator
-                    """
-                )
-            )
-        ).all()
+    return build_report(await collect_labeled_pairs(db))
 
-    # kappa between every annotator pair over their shared pairs
-    by_pair: dict[str, dict[str, str]] = defaultdict(dict)
-    for r in label_matrix:
-        by_pair[r[0]][r[1]] = r[2]
-    annotators = sorted({r[1] for r in label_matrix})
-    kappas = []
-    for i, a1 in enumerate(annotators):
-        for a2 in annotators[i + 1:]:
-            shared = [
-                (m[a1], m[a2])
-                for m in by_pair.values()
-                if a1 in m and a2 in m
-            ]
-            if len(shared) >= 5:  # below this kappa is meaningless
-                kappas.append({
-                    "annotators": [a1, a2],
-                    "pairs": len(shared),
-                    "kappa": round(
-                        cohen_kappa([s[0] for s in shared], [s[1] for s in shared]) or 0.0, 4
-                    ),
-                })
 
-    total_pairs = sum(r[1] for r in by_bucket)
-    labeled_pairs = sum(r[2] for r in by_bucket)
-    return {
-        "total_pairs": total_pairs,
-        "labeled_votes": sum(r[2] for r in per_annotator),
-        "labeled_pairs_distinct": len({r[0] for r in label_matrix}),
-        "by_bucket": [
-            {"bucket": r[0], "pairs": r[1], "labeled": r[2]} for r in by_bucket
-        ],
-        "per_annotator": _per_annotator(per_annotator),
-        "inter_annotator": kappas,
-        "complete": total_pairs > 0 and labeled_pairs >= total_pairs,
-    }
+class SplitAssignment(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    pair_id: uuid.UUID
+    event_group: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=128)]
+    split: AssignedSplit
+
+    @field_validator("event_group")
+    @classmethod
+    def assigned_event(cls, value: str) -> str:
+        if value.casefold() == "unassigned":
+            raise ValueError("event_group must be a curated event identifier, not unassigned")
+        return value
+
+
+class SplitAssignmentsBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    assignments: list[SplitAssignment] = Field(min_length=1, max_length=1000)
+
+
+@router.post("/splits")
+async def assign_splits(
+    body: SplitAssignmentsBody,
+    current_user: User = Depends(require_role(RoleEnum.admin)),
+    db: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    """Freeze whole connected components; identical retries are idempotent."""
+    await lock_pair_writes(db)
+    records = await collect_pair_metadata(db)
+    changes = [a.model_dump(mode="json") for a in body.assignments]
+    by_id = {r["pair_id"]: r for r in records}
+    if any(c["pair_id"] not in by_id for c in changes):
+        raise HTTPException(status_code=404, detail="One or more pair_ids were not found; nothing assigned")
+    new_count = sum(by_id[c["pair_id"]]["split"] == "unassigned" for c in changes)
+    try:
+        validate_assignments(records, changes)
+    except DatasetError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    selected = (await db.execute(select(EvalPair).where(EvalPair.id.in_([a.pair_id for a in body.assignments])).with_for_update())).scalars().all()
+    changes_by_id = {c["pair_id"]: c for c in changes}
+    for pair in selected:
+        change = changes_by_id[str(pair.id)]
+        pair.split, pair.event_group = change["split"], change["event_group"]
+    await db.commit()
+    return {"assigned": new_count, "unchanged": len(changes) - new_count, "frozen": True}
+
+
+@router.get("/export")
+async def export_dataset(
+    dataset_version: str = Query(min_length=1, max_length=128),
+    publication: bool = False,
+    current_user: User = Depends(require_role(RoleEnum.admin)),
+) -> dict[str, Any]:
+    """Actual records (never the blinded API); publication mode is human-only."""
+    try:
+        async with snapshot_session() as db:
+            records = await collect_export_records(db, dataset_version)
+        return build_export(records, dataset_version, publication=publication)
+    except DatasetError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc

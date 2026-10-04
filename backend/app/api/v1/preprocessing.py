@@ -7,7 +7,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, get_db_session, require_role
 from app.models.article import Article, ProcessingStatusEnum
+from app.models.pipeline import JobTypeEnum
 from app.models.user import RoleEnum, User
+from app.services.pipeline.jobs import JobAlreadyRunning, run_job
 from app.services.preprocessing_orchestrator import PreprocessingOrchestrator
 
 logger = logging.getLogger(__name__)
@@ -22,24 +24,39 @@ async def trigger_preprocessing(
     current_user: User = Depends(require_role(RoleEnum.admin))
 ) -> dict[str, Any]:
     """
-    Manually trigger a preprocessing cycle (admin only).
+    Manually trigger a preprocessing cycle (admin only), recorded as a durable job.
     """
     try:
-        summary = await prep_orchestrator.run_preprocessing_cycle(db)
+        async with run_job(
+            db, JobTypeEnum.preprocessing, trigger="manual", user_id=current_user.id
+        ) as job:
+            summary = await prep_orchestrator.run_preprocessing_cycle(db)
+            job.summary = {
+                "total_processed": summary.total_processed,
+                "status_counts": summary.status_counts,
+                "lost_ownership": summary.lost_ownership,
+                "recovered": summary.recovered,
+            }
         return {
             "status": "success",
             "message": "Preprocessing cycle completed",
+            "job_id": str(job.id),
             "summary": {
                 "total_processed": summary.total_processed,
                 "status_counts": summary.status_counts,
                 "errors": summary.errors
             }
         }
-    except Exception as e:
+    except JobAlreadyRunning:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A preprocessing job is already running.",
+        )
+    except Exception:
         logger.exception("Preprocessing trigger failed")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Preprocessing cycle failed: {e!s}"
+            detail="Preprocessing cycle failed; see the job record and server logs.",
         )
 
 

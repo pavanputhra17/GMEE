@@ -13,10 +13,16 @@ import {
 } from 'lucide-react';
 import { apiClient } from '../api/client';
 import { extrasApi } from '../api/extras';
+import { usePollingPolicy } from '../lib/polling';
+import { safeHttpUrl } from '../lib/urls';
+import { Dialog } from './Dialog';
+import { QueryError } from './QueryError';
+import { ClaimCheck } from './ClaimCheck';
 
 /**
  * FactCheck — the Verdict Engine surface.
- * Every claim gets P(supported) with its full evidence chain on display.
+ * Stored support scores are heuristic and unvalidated, with their evidence
+ * chain on display. They are not calibrated probabilities of truth.
  * Nothing is hidden: weights, signals, NLI stances, outlet priors.
  */
 
@@ -32,16 +38,20 @@ export interface VerdictRow {
 }
 
 interface Evidence {
-  [key: string]: {
-    value: number;
-    weight: number;
-    [k: string]: unknown;
-  };
+  checked_neighbors?: Array<{ domain: string; similarity: number; stance: string; claim: string }>;
+  [key: string]: unknown;
+}
+
+interface EvidenceSignal { value: number; weight: number }
+function isSignal(value: unknown): value is EvidenceSignal {
+  return !!value && typeof value === 'object' && 'value' in value && 'weight' in value
+    && typeof value.value === 'number' && Number.isFinite(value.value)
+    && typeof value.weight === 'number' && Number.isFinite(value.weight);
 }
 
 interface VerdictDetail extends VerdictRow {
   verdict_rationale?: string;
-  verdict_evidence?: Evidence & { checked_neighbors?: Array<{ domain: string; similarity: number; stance: string; claim: string }> };
+  verdict_evidence?: Evidence | null;
   entities?: Array<{ text: string; type: string }>;
 }
 
@@ -60,12 +70,14 @@ const probColor = (p: number): string =>
 const VerdictCard: React.FC<{ row: VerdictRow; onOpen: () => void }> = ({ row, onOpen }) => {
   const band = BAND_STYLE[row.verdict] ?? BAND_STYLE.UNRESOLVED;
   const Icon = band.icon;
-  const p = row.probability ?? 0.5;
+  const p = row.probability;
 
   return (
-    <div
+    <button
+      type="button"
       onClick={onOpen}
-      className="border border-hermes-bone/15 bg-hermes-panel-deep p-4 flex flex-col gap-3 cursor-pointer hover:border-hermes-bone/35 transition-colors"
+      aria-label={`Inspect evidence for ${row.claim_text}`}
+      className="w-full text-left border border-hermes-bone/15 bg-hermes-panel-deep p-4 flex flex-col gap-3 cursor-pointer hover:border-hermes-bone/35 transition-colors"
     >
       <div className="flex items-start justify-between gap-3">
         <span className={`chip-brutal w-fit ${band.cls} font-bold`}>
@@ -73,10 +85,10 @@ const VerdictCard: React.FC<{ row: VerdictRow; onOpen: () => void }> = ({ row, o
           {band.label}
         </span>
         <div className="text-right shrink-0">
-          <div className="font-display text-xl tabular-nums" style={{ color: probColor(p) }}>
-            {(p * 100).toFixed(1)}%
+          <div className="font-display text-xl tabular-nums" style={{ color: p == null ? undefined : probColor(p) }}>
+            {p == null ? 'Not scored' : `${(p * 100).toFixed(1)}%`}
           </div>
-          <div className="text-[9px] font-mono uppercase tracking-widest text-hermes-bone/40">P(supported)</div>
+          <div className="text-[9px] font-mono uppercase tracking-widest text-hermes-bone/40">Heuristic support · unvalidated</div>
         </div>
       </div>
 
@@ -85,7 +97,7 @@ const VerdictCard: React.FC<{ row: VerdictRow; onOpen: () => void }> = ({ row, o
       <div className="h-1.5 bg-hermes-bone/10 overflow-hidden">
         <div
           className="h-full transition-all duration-700"
-          style={{ width: `${p * 100}%`, background: probColor(p) }}
+          style={{ width: `${p == null ? 0 : Math.max(0, Math.min(100, p * 100))}%`, background: p == null ? undefined : probColor(p) }}
         />
       </div>
 
@@ -95,7 +107,7 @@ const VerdictCard: React.FC<{ row: VerdictRow; onOpen: () => void }> = ({ row, o
           evidence chain <ChevronDown className="w-3 h-3" />
         </span>
       </div>
-    </div>
+    </button>
   );
 };
 
@@ -119,7 +131,7 @@ const FeedbackButtons: React.FC<{ claimId: string; engineBand: string }> = ({
   if (status === 'done') {
     return (
       <div className="border border-emerald-400/30 bg-emerald-400/5 p-4 font-mono text-[10px] uppercase tracking-widest text-emerald-400">
-        Vote recorded — it feeds the engine's calibration loop
+        Vote recorded — anonymous, unverified feedback; not independent validation
       </div>
     );
   }
@@ -127,7 +139,7 @@ const FeedbackButtons: React.FC<{ claimId: string; engineBand: string }> = ({
   return (
     <div className="border border-hermes-bone/15 bg-hermes-panel-deep p-4">
       <div className="font-mono text-[10px] uppercase tracking-widest text-hermes-bone/45 mb-2">
-        Human review · one vote per visitor (pseudonymous)
+        Anonymous review · shared IPs may share a vote; not verified human gold
       </div>
       <div className="flex items-center gap-2 flex-wrap">
         <button
@@ -136,7 +148,7 @@ const FeedbackButtons: React.FC<{ claimId: string; engineBand: string }> = ({
           className="btn-ghost-brutal !text-emerald-300 !border-emerald-400/40"
         >
           <ShieldCheck className="w-3.5 h-3.5 inline mr-1" />
-          AGREE
+          Agree with engine
         </button>
         <button
           onClick={() => void send('DISAGREE')}
@@ -144,9 +156,10 @@ const FeedbackButtons: React.FC<{ claimId: string; engineBand: string }> = ({
           className="btn-ghost-brutal !text-hermes-red-bright !border-hermes-red-bright/40"
         >
           <AlertOctagon className="w-3.5 h-3.5 inline mr-1" />
-          DISAGREE
+          Disagree with engine
         </button>
         <select
+          aria-label="Suggested stored verdict band"
           value={corrected}
           onChange={(e) => setCorrected(e.target.value)}
           className="bg-ink border border-hermes-bone/20 font-mono text-[10px] px-2 py-1.5 text-hermes-bone/80"
@@ -169,8 +182,9 @@ const FeedbackButtons: React.FC<{ claimId: string; engineBand: string }> = ({
 };
 
 const EvidenceDrawer: React.FC<{ detail: VerdictDetail; onClose: () => void }> = ({ detail, onClose }) => {
-  const ev = detail.verdict_evidence ?? {};
-  const neighbors = ev.checked_neighbors ?? [];
+  const ev = detail.verdict_evidence && typeof detail.verdict_evidence === 'object' ? detail.verdict_evidence : {};
+  const neighbors = Array.isArray(ev.checked_neighbors) ? ev.checked_neighbors : [];
+  const signals = Object.entries(ev).flatMap(([key, value]) => isSignal(value) ? [{ key, ...value }] : []);
 
   const SIGNAL_LABELS: Record<string, string> = {
     corroboration: 'Independent corroboration',
@@ -181,29 +195,30 @@ const EvidenceDrawer: React.FC<{ detail: VerdictDetail; onClose: () => void }> =
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex justify-end bg-black/60 backdrop-blur-sm" onClick={onClose}>
-      <div
-        className="w-full max-w-2xl h-full overflow-y-auto scroll-contained bg-hermes-panel border-l border-hermes-bone/20 p-6 space-y-6"
-        onClick={(e) => e.stopPropagation()}
-      >
+    <Dialog
+      labelledBy="verdict-dossier-title"
+      onClose={onClose}
+      backdropClassName="fixed inset-0 z-50 flex justify-end bg-black/60 backdrop-blur-sm"
+      className="w-full max-w-2xl h-full overflow-y-auto scroll-contained bg-hermes-panel border-l border-hermes-bone/20 p-6 space-y-6"
+    >
         {/* header */}
         <div className="flex items-start justify-between gap-4 pb-4 border-b border-hermes-bone/15">
           <div>
-            <div className="font-mono text-[10px] uppercase tracking-widest text-hermes-bone/45 mb-1">
-              Verdict Dossier · full transparency
-            </div>
+            <h2 id="verdict-dossier-title" className="font-mono text-[10px] uppercase tracking-widest text-hermes-bone/45 mb-1">
+              Verdict Dossier · stored heuristic analysis
+            </h2>
             <span className={`chip-brutal ${(BAND_STYLE[detail.verdict] ?? BAND_STYLE.UNRESOLVED).cls} font-bold`}>
-              {(BAND_STYLE[detail.verdict] ?? BAND_STYLE.UNRESOLVED).label} · {((detail.probability ?? 0.5) * 100).toFixed(1)}%
+              {(BAND_STYLE[detail.verdict] ?? BAND_STYLE.UNRESOLVED).label} · {detail.probability == null ? 'Not scored' : `${(detail.probability * 100).toFixed(1)}% heuristic support (unvalidated)`}
             </span>
           </div>
-          <button onClick={onClose} className="btn-ghost-brutal !text-hermes-bone !border-hermes-bone/30 !py-1 !px-2">×</button>
+          <button onClick={onClose} aria-label="Close verdict dossier" className="btn-ghost-brutal !text-hermes-bone !border-hermes-bone/30 !py-1 !px-2">×</button>
         </div>
 
         {/* the claim */}
         <div>
           <div className="font-mono text-[10px] uppercase tracking-widest text-hermes-bone/45 mb-1.5">The Claim</div>
           <p className="font-display text-lg leading-snug">{detail.claim_text}</p>
-          <a href={detail.article_url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 mt-2 font-mono text-xs text-hermes-red-bright hover:text-white">
+          <a href={safeHttpUrl(detail.article_url)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 mt-2 font-mono text-xs text-hermes-red-bright hover:text-white">
             {detail.article_title?.slice(0, 70)}… <ExternalLink className="w-3 h-3" />
           </a>
         </div>
@@ -225,13 +240,12 @@ const EvidenceDrawer: React.FC<{ detail: VerdictDetail; onClose: () => void }> =
             Signal Breakdown · weights disclosed
           </div>
           <div className="space-y-2">
-            {Object.entries(ev)
-              .filter(([k]) => k !== 'checked_neighbors')
-              .map(([key, sig]) => (
-                <div key={key} className="border border-hermes-bone/15 bg-hermes-panel-deep px-3 py-2.5">
+            {signals.length === 0 && <p className="text-xs font-mono text-hermes-bone/55">No weighted signal breakdown supplied.</p>}
+            {signals.map((sig) => (
+                <div key={sig.key} className="border border-hermes-bone/15 bg-hermes-panel-deep px-3 py-2.5">
                   <div className="flex items-center justify-between mb-1">
                     <span className="font-mono text-xs text-hermes-bone/85">
-                      {SIGNAL_LABELS[key] ?? key}
+                      {SIGNAL_LABELS[sig.key] ?? sig.key}
                       <span className="ml-2 text-[9px] text-hermes-bone/40">weight {(sig.weight * 100).toFixed(0)}%</span>
                     </span>
                     <span className="font-mono text-sm tabular-nums" style={{ color: probColor(sig.value) }}>
@@ -261,8 +275,8 @@ const EvidenceDrawer: React.FC<{ detail: VerdictDetail; onClose: () => void }> =
               {neighbors.map((nb, i) => (
                 <div key={i} className="flex items-center gap-2 border border-hermes-bone/12 bg-hermes-panel-deep px-3 py-2">
                   <span className={`font-mono text-[10px] font-bold px-1.5 py-0.5 ${
-                    nb.stance === 'yes' ? 'bg-emerald-400/15 text-emerald-300' :
-                    nb.stance === 'no' ? 'bg-hermes-red-bright/15 text-hermes-red-bright' :
+                    nb.stance === 'yes' || nb.stance === 'entailment' ? 'bg-emerald-400/15 text-emerald-300' :
+                    nb.stance === 'no' || nb.stance === 'contradiction' ? 'bg-hermes-red-bright/15 text-hermes-red-bright' :
                     'bg-hermes-bone/10 text-hermes-bone/50'
                   }`}>
                     {nb.stance.toUpperCase()}
@@ -275,6 +289,8 @@ const EvidenceDrawer: React.FC<{ detail: VerdictDetail; onClose: () => void }> =
             </div>
           )}
         </div>
+
+        <details><summary className="cursor-pointer text-xs font-mono">Full stored evidence metadata</summary><pre className="text-xs whitespace-pre-wrap break-words mt-2">{JSON.stringify(ev, null, 2)}</pre></details>
 
         {/* entities */}
         {detail.entities && detail.entities.length > 0 && (
@@ -289,46 +305,48 @@ const EvidenceDrawer: React.FC<{ detail: VerdictDetail; onClose: () => void }> =
             </div>
           </div>
         )}
-      </div>
-    </div>
+    </Dialog>
   );
 };
 
 export const FactCheck: React.FC = () => {
   const [openId, setOpenId] = useState<string | null>(null);
   const [bandFilter, setBandFilter] = useState('');
+  const polling = usePollingPolicy(20000);
 
   const list = useQuery({
     queryKey: ['verdicts', bandFilter],
-    queryFn: () =>
-      apiClient.get(`/verdicts${bandFilter ? `?band=${bandFilter}` : ''}`) as Promise<{
+    queryFn: ({ signal }) =>
+      apiClient.get(`/verdicts${bandFilter ? `?band=${encodeURIComponent(bandFilter)}` : ''}`, { signal }) as Promise<{
         total: number; items: VerdictRow[];
       }>,
-    refetchInterval: 20000,
+    ...polling,
   });
 
   const stats = useQuery({
     queryKey: ['verdict-stats'],
-    queryFn: () => apiClient.get('/verdicts/stats') as Promise<{
+    queryFn: ({ signal }) => apiClient.get('/verdicts/stats', { signal }) as Promise<{
       total_claims: number;
       distribution: Array<{ band: string; count: number }>;
       outlets: Array<{ name: string; claims: number; supported: number; disputed: number; credibility: number }>;
     }>,
-    refetchInterval: 25000,
+    ...polling,
   });
 
   const detail = useQuery({
     queryKey: ['verdict-detail', openId],
-    queryFn: () => apiClient.get(`/verdicts/${openId}`) as Promise<VerdictDetail>,
+    queryFn: ({ signal }) => apiClient.get(`/verdicts/${openId}`, { signal }) as Promise<VerdictDetail>,
     enabled: !!openId,
+    ...polling,
+    refetchInterval: false,
   });
 
   const leaderboard = useQuery({
     queryKey: ['leaderboard'],
-    queryFn: () => apiClient.get('/verdicts/leaderboard') as Promise<{
+    queryFn: ({ signal }) => apiClient.get('/verdicts/leaderboard', { signal }) as Promise<{
       ranking: Array<{ name: string; credibility: number; claims: number; supported: number; disputed: number }>;
     }>,
-    refetchInterval: 30000,
+    ...polling,
   });
 
   return (
@@ -337,16 +355,18 @@ export const FactCheck: React.FC = () => {
       <div className="card-brutal-dark p-5 flex items-start gap-4 border-l-4 border-l-hermes-red">
         <Landmark className="w-6 h-6 shrink-0 mt-0.5" />
         <div className="text-sm leading-relaxed text-hermes-bone/80">
-          <span className="font-display text-base text-hermes-bone">GMEE Verdict Standard.</span>{' '}
-          Every verdict is a <strong>calibrated probability</strong>, not a decree:
-          P(supported&nbsp;|&nbsp;evidence) computed from five disclosed signals — independent
-          corroboration, cross-outlet contradiction (NLI), source track record,
-          entity grounding, linguistic markers. Weights are public, every factor is
-          inspectable per claim, and no software may declare absolute truth.
-          That restraint <em>is</em> the benchmark.
+          <span className="font-display text-base text-hermes-bone">GMEE corpus-local assessment.</span>{' '}
+          Stored support scores are <strong>uncalibrated, unvalidated heuristics</strong>,
+          not probabilities of truth. Corpus corroboration, NLI contradiction,
+          outlet counts and other disclosed signals can be incomplete or biased.
+          Inspect the returned evidence; neither a band nor a score establishes factual correctness.
         </div>
       </div>
 
+      <ClaimCheck />
+
+      {stats.isLoading && <p role="status" className="text-xs font-mono">Loading stored verdict statistics…</p>}
+      {stats.isError && <QueryError title="Verdict statistics unavailable" error={stats.error} onRetry={() => stats.refetch()} retrying={stats.isFetching} />}
       {/* stats strip */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <div className="card-brutal-dark p-4">
@@ -377,6 +397,7 @@ export const FactCheck: React.FC = () => {
               <Scale className="w-5 h-5" /> Verdict Feed
             </h2>
             <select
+              aria-label="Stored verdict band filter"
               value={bandFilter}
               onChange={(e) => setBandFilter(e.target.value)}
               className="bg-hermes-panel-deep border border-hermes-bone/25 text-hermes-bone font-mono text-xs px-2 py-1.5 outline-none"
@@ -393,9 +414,11 @@ export const FactCheck: React.FC = () => {
 
           {list.isLoading ? (
             <div className="space-y-3">{[...Array(5)].map((_, i) => <div key={i} className="shimmer h-28" />)}</div>
+          ) : list.isError ? (
+            <QueryError title="Verdict feed unavailable" error={list.error} onRetry={() => list.refetch()} retrying={list.isFetching} />
           ) : (list.data?.items.length ?? 0) === 0 ? (
             <p className="font-mono text-xs text-hermes-bone/55 py-8 text-center">
-              No verdicts yet — run scripts/run_verdicts.py after extracting claims.
+              No verdicts yet for this filter. No stored claims have been returned.
             </p>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -409,14 +432,16 @@ export const FactCheck: React.FC = () => {
         {/* outlet credibility leaderboard */}
         <section className="card-brutal-dark p-6 h-fit">
           <h2 className="text-2xl font-display flex items-center gap-2 mb-1">
-            <Trophy className="w-5 h-5" /> Outlet Credibility
+            <Trophy className="w-5 h-5" /> Outlet Heuristic Scores
           </h2>
           <p className="text-[10px] font-mono uppercase tracking-widest text-hermes-bone/45 mb-5">
-            laplace-smoothed over verdicted claims
+            laplace-smoothed support counts · not validated source credibility
           </p>
 
           <div className="space-y-2.5">
-            {leaderboard.isLoading && [...Array(6)].map((_, i) => <div key={i} className="shimmer h-10" />)}
+            {leaderboard.isLoading && <p role="status" className="text-xs font-mono">Loading outlet scores…</p>}
+            {leaderboard.isError && <QueryError title="Outlet scores unavailable" error={leaderboard.error} onRetry={() => leaderboard.refetch()} retrying={leaderboard.isFetching} />}
+            {leaderboard.isSuccess && leaderboard.data.ranking.length === 0 && <p className="text-xs font-mono text-hermes-bone/55">No outlet scores returned.</p>}
             {leaderboard.data?.ranking.map((o, idx) => (
               <div key={o.name} className="flex items-center gap-3">
                 <span className="font-display text-lg w-7 text-hermes-bone/35 tabular-nums">{idx + 1}</span>
@@ -431,7 +456,7 @@ export const FactCheck: React.FC = () => {
                     <div className="h-full" style={{ width: `${o.credibility * 100}%`, background: probColor(o.credibility) }} />
                   </div>
                   <div className="font-mono text-[9px] text-hermes-bone/35 mt-0.5 uppercase tracking-wider">
-                    {o.claims} claims · {o.supported}✓ {o.disputed}✗
+                    {o.claims} claims · {o.supported} supported · {o.disputed} disputed
                   </div>
                 </div>
               </div>
@@ -440,10 +465,11 @@ export const FactCheck: React.FC = () => {
         </section>
       </div>
 
-      {openId && (detail.data ? <EvidenceDrawer detail={detail.data} onClose={() => setOpenId(null)} /> : (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center" onClick={() => setOpenId(null)}>
-          <div className="shimmer w-96 h-64" />
-        </div>
+      {openId && (detail.data && !detail.isError ? <EvidenceDrawer detail={detail.data} onClose={() => setOpenId(null)} /> : (
+        <Dialog labelledBy="verdict-loading-title" onClose={() => setOpenId(null)}>
+          <div className="flex items-center justify-between gap-3"><h2 id="verdict-loading-title" className="font-display text-xl">Verdict Dossier</h2><button type="button" aria-label="Close verdict dossier" onClick={() => setOpenId(null)} className="btn-brutal">×</button></div>
+          {detail.isError ? <QueryError title="Verdict detail unavailable" error={detail.error} onRetry={() => detail.refetch()} retrying={detail.isFetching} /> : <p role="status" className="font-mono text-xs">Loading stored evidence…</p>}
+        </Dialog>
       ))}
     </div>
   );

@@ -148,3 +148,31 @@ async def test_duplicate_mutation_edge_is_rejected() -> None:
             await db.flush()
 
         await db.rollback()  # leave the database exactly as it was found
+
+
+@pytest.mark.asyncio
+async def test_mutation_chains_endpoint_runs_on_pgvector() -> None:
+    """Regression: /verdicts/game/mutations ordered its pair query by
+    ``claims.created_at`` — a column the table never had — so the Mutation DNA
+    panel 500'd on real Postgres (asyncpg UndefinedColumnError) while the
+    SQLite unit suite stayed green: the ``<=>`` pair query never executes
+    there. Assertions are shape-only so they hold on an empty corpus too."""
+    from httpx import ASGITransport, AsyncClient
+
+    from app.main import app
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            "/api/v1/verdicts/game/mutations",
+            params={"min_versions": 2, "limit": 5},
+        )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert "chains" in body
+    for chain in body["chains"]:
+        assert {"chain_id", "size", "distinct_outlets", "versions"} <= set(chain)
+        for version in chain["versions"]:
+            assert {"id", "text", "domain", "published_at"} <= set(version)

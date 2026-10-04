@@ -184,7 +184,7 @@ async def test_orchestrator_resilience(db_session: AsyncSession, mock_httpx_get,
     
     assert bbc_sum.error is None
     assert "Skipped - NewsAPI key missing" in (news_sum.error or "")
-    assert "Failed - Simulated crash" in (reddit_sum.error or "")
+    assert "Failed - ValueError: Simulated crash" in (reddit_sum.error or "")
 
 
 async def test_trigger_endpoint_admin(async_client, mock_httpx_get, mock_httpx_post, monkeypatch):

@@ -4,6 +4,9 @@ import { Network, Info, ExternalLink, Orbit } from 'lucide-react';
 import { corpusApi, StoryCluster } from '../api/corpus';
 import { setSelectedArticle } from '../lib/useSelectedArticle';
 import type { TabType } from './Header';
+import { usePollingPolicy } from '../lib/polling';
+import { safeHttpUrl } from '../lib/urls';
+import { QueryError } from './QueryError';
 
 /**
  * GraphVisualizer — REAL story clusters from Neo4j.
@@ -80,11 +83,12 @@ function layout(clusters: StoryCluster[]): { nodes: Node[]; links: Array<{ a: st
 export const GraphVisualizer: React.FC<{ setActiveTab?: (tab: TabType) => void }> = ({ setActiveTab }) => {
   const [selected, setSelected] = useState<string | null>(null);
   const svgRef = useRef<SVGSVGElement>(null);
+  const polling = usePollingPolicy(30000);
 
   const clusters = useQuery({
     queryKey: ['story-clusters'],
-    queryFn: () => corpusApi.storyClusters(3, 5),
-    refetchInterval: 30000,
+    queryFn: ({ signal }) => corpusApi.storyClusters(3, 5, { signal }),
+    ...polling,
   });
 
   const { nodes, links } = useMemo(
@@ -103,7 +107,7 @@ export const GraphVisualizer: React.FC<{ setActiveTab?: (tab: TabType) => void }
             <h2 className="text-2xl font-display">Story Cluster Topology</h2>
           </div>
           <p className="text-xs font-mono text-hermes-bone/55 uppercase tracking-wider">
-            Live from Neo4j · {nodes.length} articles · {links.length} similarity edges
+            {clusters.data ? `Neo4j snapshot · ${nodes.length} articles · ${links.length} similarity edges` : clusters.isLoading ? 'Loading topology…' : 'Topology unavailable'}
           </p>
         </div>
         <a
@@ -120,8 +124,10 @@ export const GraphVisualizer: React.FC<{ setActiveTab?: (tab: TabType) => void }
         {/* SVG canvas */}
         <div className="lg:col-span-2 relative bg-hermes-panel-deep border border-hermes-bone/20 p-2 h-96 overflow-hidden rounded-none">
           {clusters.isLoading ? (
-            <div className="shimmer h-full w-full" />
-          ) : (
+            <div role="status" aria-label="Loading story topology" className="shimmer h-full w-full" />
+          ) : clusters.isError ? (
+            <QueryError title="Story topology unavailable" error={clusters.error} onRetry={() => clusters.refetch()} retrying={clusters.isFetching} />
+          ) : nodes.length === 0 ? <p className="text-xs font-mono text-hermes-bone/55 p-4">No linked articles returned.</p> : (
             <svg ref={svgRef} viewBox="0 0 600 400" className="w-full h-full">
               {links.map((l, i) => {
                 const a = nodes.find((n) => n.id === l.a)!;
@@ -144,6 +150,11 @@ export const GraphVisualizer: React.FC<{ setActiveTab?: (tab: TabType) => void }
                 <g
                   key={n.id}
                   onClick={() => setSelected(n.id)}
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`Inspect ${n.title}`}
+                  aria-pressed={sel?.id === n.id}
+                  onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setSelected(n.id); } }}
                   className="cursor-pointer"
                 >
                   {(sel?.id === n.id) && (
@@ -207,14 +218,14 @@ export const GraphVisualizer: React.FC<{ setActiveTab?: (tab: TabType) => void }
                   <div className="flex justify-between items-center bg-hermes-panel-deep border border-hermes-bone/20 p-2.5">
                     <span className="text-hermes-bone/55">Similarity</span>
                     <span className="font-bold text-hermes-red-bright">
-                      {sel.score ? `${(sel.score * 100).toFixed(1)}% match` : 'cluster center'}
+                      {sel.score != null ? `${(sel.score * 100).toFixed(1)}% similarity (uncalibrated)` : 'cluster center'}
                     </span>
                   </div>
                 </div>
               </div>
 
               <a
-                href={sel.url}
+                href={safeHttpUrl(sel.url)}
                 target="_blank"
                 rel="noreferrer"
                 className="btn-brutal mt-4 w-fit"
@@ -229,6 +240,7 @@ export const GraphVisualizer: React.FC<{ setActiveTab?: (tab: TabType) => void }
           {/* View in Timeline — always visible when a node is selected */}
           {sel && (
             <button
+              disabled={!setActiveTab}
               onClick={() => {
                 setSelectedArticle({
                   id: sel.id,

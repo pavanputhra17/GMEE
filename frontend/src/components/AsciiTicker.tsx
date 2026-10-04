@@ -1,4 +1,5 @@
 import React, { useEffect, useRef } from 'react';
+import { useAnimationActivity } from '../lib/useAnimationActivity';
 
 /**
  * AsciiTicker — a true character-crawl ticker.
@@ -30,15 +31,14 @@ export const AsciiTicker: React.FC<AsciiTickerProps> = ({
 }) => {
   const hostRef = useRef<HTMLDivElement>(null);
   const textRef = useRef<HTMLSpanElement>(null);
+  const { animate } = useAnimationActivity(hostRef);
 
   useEffect(() => {
     const host = hostRef.current;
     const out = textRef.current;
     if (!host || !out) return;
 
-    const reduced =
-      typeof window.matchMedia === 'function' &&
-      window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const reduced = !animate;
 
     const message = items.join(separator) + separator;
 
@@ -149,7 +149,7 @@ export const AsciiTicker: React.FC<AsciiTickerProps> = ({
       running = false;
       cancelAnimationFrame(raf);
     };
-  }, [items, speed, separator]);
+  }, [items, speed, separator, animate]);
 
   return (
     <div

@@ -14,6 +14,7 @@ from app.services.collectors.base import BaseCollector, MissingCredentialsError
 from app.services.collectors.news_api import NewsAPICollector
 from app.services.collectors.reddit import RedditCollector
 from app.services.collectors.rss import RSSCollector
+from app.services.pipeline.ownership import sanitize_error
 from app.services.preprocessing_orchestrator import PreprocessingOrchestrator
 
 logger = logging.getLogger(__name__)
@@ -43,12 +44,17 @@ class CollectionOrchestrator:
         logger.info("Starting collection cycle")
         
         # Load all active sources
-        result = await db.execute(select(Source).where(Source.is_active == True))
-        sources = result.scalars().all()
+        result = await db.execute(select(Source.id).where(Source.is_active == True))
+        source_ids = list(result.scalars().all())
         
         summaries = []
         
-        for source in sources:
+        for source_id in source_ids:
+            # Re-fetch per iteration: a rollback for a failed source expires
+            # every ORM object; get() reloads an expired instance safely.
+            source = await db.get(Source, source_id)
+            if source is None:
+                continue
             collector = self.collectors.get(source.type)
             if not collector:
                 logger.error(f"No collector configured for source type {source.type}")
@@ -121,15 +127,16 @@ class CollectionOrchestrator:
                     error=f"Skipped - {e}"
                 ))
             except Exception as e:
-                logger.exception(f"Unexpected error collecting from {source.name}")
-                summaries.append(SourceCollectionSummary(
-                    source_name=source.name,
-                    articles_fetched=0,
-                    articles_inserted=0,
-                    error=f"Failed - {e}"
-                ))
+                source_name = source.name
+                logger.exception(f"Unexpected error collecting from {source_name}")
                 # rollback in case of partial transaction failure for this source
                 await db.rollback()
+                summaries.append(SourceCollectionSummary(
+                    source_name=source_name,
+                    articles_fetched=0,
+                    articles_inserted=0,
+                    error=f"Failed - {sanitize_error(e, limit=200)}"
+                ))
                 
         logger.info("Collection cycle completed")
         

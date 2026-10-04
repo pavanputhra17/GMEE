@@ -1,6 +1,8 @@
+import json
 import logging
 import uuid
 from collections.abc import Iterator, Sequence
+from datetime import datetime
 from typing import Any
 
 from neo4j import AsyncSession
@@ -27,6 +29,10 @@ _REL_TYPE_NAMES = frozenset(rt.value for rt in RelationshipTypeEnum)
 def _chunks(rows: list[Any]) -> Iterator[list[Any]]:
     for i in range(0, len(rows), _BATCH_SIZE):
         yield rows[i : i + _BATCH_SIZE]
+
+
+def _isoformat(value: datetime | None) -> str | None:
+    return value.isoformat() if value is not None else None
 
 
 class Neo4jWriter:
@@ -100,14 +106,21 @@ class Neo4jWriter:
 
         # 2. Claims
         claim_rows = [
-            {"id": str(c.id), "text": c.claim_text, "extracted_at": c.extracted_at.isoformat()}
+            {
+                "id": str(c.id), "text": c.claim_text,
+                "article_id": str(c.article_id),
+                "extracted_at": _isoformat(c.extracted_at),
+                "published_at": _isoformat(articles_by_id[c.article_id].published_at)
+                if c.article_id in articles_by_id else None,
+            }
             for c in claims
         ]
         for chunk in _chunks(claim_rows):
             await session.run("""
                 UNWIND $rows AS row
                 MERGE (c:Claim {id: row.id})
-                SET c.text = row.text, c.extracted_at = row.extracted_at
+                SET c.text = row.text, c.extracted_at = row.extracted_at,
+                    c.article_id = row.article_id, c.published_at = row.published_at
             """, rows=chunk)
 
         # 3. Claim -> Source edges
@@ -154,6 +167,19 @@ class Neo4jWriter:
                 "from_id": str(rel.from_claim_id),
                 "to_id": str(rel.to_claim_id),
                 "score": rel.score,
+                "edge_id": str(rel.id) if rel.id else None,
+                "created_at": rel.created_at.isoformat() if rel.created_at else None,
+                # Neo4j properties cannot hold a nested JSON map. Retain the full
+                # evidence as JSON plus queryable typed/provenance properties.
+                "mutation_evidence": json.dumps(rel.mutation_evidence, sort_keys=True)
+                if rel.mutation_evidence is not None else None,
+                "mutation_types": (rel.mutation_evidence or {}).get("mutation_types", []),
+                "algorithm_version": (rel.mutation_evidence or {}).get("algorithm_version"),
+                "parent_claim_id": str(rel.to_claim_id)
+                if rel.relationship_type == RelationshipTypeEnum.EVOLVED_FROM else None,
+                "child_claim_id": str(rel.from_claim_id)
+                if rel.relationship_type == RelationshipTypeEnum.EVOLVED_FROM else None,
+                "observed_propagation": False,
             })
         for rel_type, rows in by_type.items():
             for chunk in _chunks(rows):
@@ -163,7 +189,15 @@ class Neo4jWriter:
                     MATCH (from_claim:Claim {{id: row.from_id}})
                     MATCH (to_claim:Claim {{id: row.to_id}})
                     MERGE (from_claim)-[r:{rel_type}]->(to_claim)
-                    SET r.score = row.score
+                    SET r.score = row.score, r.edge_id = row.edge_id,
+                        r.created_at = row.created_at,
+                        r.mutation_evidence = row.mutation_evidence,
+                        r.mutation_types = row.mutation_types,
+                        r.algorithm_version = row.algorithm_version,
+                        r.parent_claim_id = row.parent_claim_id,
+                        r.child_claim_id = row.child_claim_id,
+                        r.inference = 'inferred',
+                        r.observed_propagation = row.observed_propagation
                 """, rows=chunk)
 
     async def _prune_stale_evolved(

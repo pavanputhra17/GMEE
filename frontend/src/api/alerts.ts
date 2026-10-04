@@ -1,4 +1,4 @@
-import { apiClient } from './client';
+import { apiClient, type ApiRequestOptions } from './client';
 
 export interface AlertSignal {
   type: string;
@@ -44,8 +44,8 @@ export interface AlertFeed {
 }
 
 export const alertsApi = {
-  snapshot: () => apiClient.get('/alerts') as Promise<AlertSnapshot>,
+  snapshot: (options?: ApiRequestOptions) => apiClient.get<AlertSnapshot>('/alerts', options),
 
-  feed: (limit = 12) =>
-    apiClient.get(`/alerts/feed?limit=${limit}`) as Promise<AlertFeed>,
+  feed: (limit = 12, options?: ApiRequestOptions) =>
+    apiClient.get<AlertFeed>(`/alerts/feed?limit=${limit}`, options),
 };

@@ -158,16 +158,22 @@ async def semantic_search(
     limit: int = Query(10, ge=1, le=30),
 ) -> dict[str, Any]:
     """Nearest-neighbor article search via pgvector cosine distance."""
+    import asyncio
+
     from sqlalchemy import text as sql_text
 
     from app.services.nlp.embedding_service import EmbeddingService
 
+    if not EmbeddingService.is_loaded():
+        raise HTTPException(
+            status_code=503,
+            detail="Embedding model is not loaded yet (warming up); retry shortly.",
+        )
     try:
-        EmbeddingService.load_model()
-        qvec = EmbeddingService.generate_embedding(q)
-    except Exception as exc:  # model load failure etc.
+        qvec = await asyncio.to_thread(EmbeddingService.generate_embedding, q)
+    except Exception:
         logger.exception("embedding failure")
-        raise HTTPException(status_code=503, detail=f"embedding service unavailable: {exc}")
+        raise HTTPException(status_code=503, detail="Embedding service unavailable; retry later.")
 
     lit = "[" + ",".join(f"{x:.6f}" for x in qvec) + "]"
 

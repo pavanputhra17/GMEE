@@ -5,6 +5,9 @@ import { timelineApi, TimelineCluster } from '../api/timeline';
 
 import { useSelectedArticle, clearSelectedArticle } from '../lib/useSelectedArticle';
 import { ClusterDossier } from './ClusterDossier';
+import { usePollingPolicy } from '../lib/polling';
+import { useAnimationActivity } from '../lib/useAnimationActivity';
+import { QueryError } from './QueryError';
 /**
  * TimelineTunnel — 3D story-time tunnel. Pure canvas projection, zero deps.
  *
@@ -45,6 +48,8 @@ const fmtDate = (iso?: string | null) =>
 export default function TimelineTunnel(): React.ReactElement {
   const wrapRef = useRef<HTMLDivElement>(null);
   const cvRef = useRef<HTMLCanvasElement>(null);
+  const { animate, reducedMotion, visible } = useAnimationActivity(wrapRef);
+  const polling = usePollingPolicy(45000);
   const camRef = useRef({ z: -260 }); // camera depth into the tunnel (negative = before first ring)
   const targetRef = useRef({ z: -260 });
   const velRef = useRef(0);
@@ -69,8 +74,8 @@ export default function TimelineTunnel(): React.ReactElement {
 
   const q = useQuery({
     queryKey: ['timeline', selId ?? 'all'],
-    queryFn: () => timelineApi.clusters(60, selId ?? undefined),
-    refetchInterval: 45000,
+    queryFn: ({ signal }) => timelineApi.clusters(60, selId ?? undefined, { signal }),
+    ...polling,
   });
 
   const clusters = useMemo(() => {
@@ -140,25 +145,21 @@ export default function TimelineTunnel(): React.ReactElement {
     return () => el.removeEventListener('wheel', onWheel);
   }, [layout]);
 
-  // keyboard
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (!layout.length) return;
-      if (e.key === 'Escape') setInspect(null);
-      if (e.key === 'ArrowUp') setDepth((d) => Math.max(0, d - 1));
-      if (e.key === 'ArrowDown' || e.key === 'Enter')
-        setDepth((d) => Math.min(layout.length - 1, d + 1));
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [layout]);
+  const onTimelineKey = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.target !== event.currentTarget || inspect || !layout.length || event.ctrlKey || event.metaKey || event.altKey) return;
+    if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+      event.preventDefault();
+      setDepth((value) => Math.max(0, Math.min(layout.length - 1, value + (event.key === 'ArrowDown' ? 1 : -1))));
+    } else if (event.key === 'Enter') {
+      event.preventDefault();
+      if (clusters[depth]) setInspect(clusters[depth]);
+    }
+  };
 
   // main render loop
   useEffect(() => {
     let raf = 0;
-    const reduceMotion =
-      typeof window !== 'undefined' &&
-      window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    const reduceMotion = reducedMotion;
 
     const project = (
       x: number, y: number, z: number,
@@ -178,12 +179,13 @@ export default function TimelineTunnel(): React.ReactElement {
     const drawRing = (
       ctx: CanvasRenderingContext2D,
       cx: number, cy: number, r: number,
-      alpha: number, color: string, t: number, spin: number, seed: number
+      alpha: number, color: string, t: number, spin: number, seed: number,
+      members: TimelineCluster['members']
     ) => {
       ctx.save();
       ctx.globalAlpha = alpha;
       // orbiting member nodes
-      const n = 7;
+      const n = members.length;
       for (let k = 0; k < n; k++) {
         const a = t * spin * 8 + (k / n) * Math.PI * 2 + seed * 0.37;
         const px = cx + Math.cos(a) * r;
@@ -191,10 +193,7 @@ export default function TimelineTunnel(): React.ReactElement {
         const rr = Math.max(1.4, 3.6 * alpha);
         ctx.beginPath();
         ctx.arc(px, py, rr, 0, Math.PI * 2);
-        ctx.fillStyle = colorFor(
-          // member colors cycle by k for variety; hub drawn separately
-          undefined
-        );
+        ctx.fillStyle = colorFor(members[k].domain);
         ctx.fill();
       }
       // hub core
@@ -215,12 +214,10 @@ export default function TimelineTunnel(): React.ReactElement {
     };
 
     const frame = (t: number) => {
+      if (!visible) return;
       const cv = cvRef.current;
       const wrap = wrapRef.current;
-      if (!cv || !wrap) {
-        raf = requestAnimationFrame(frame);
-        return;
-      }
+      if (!cv || !wrap) return;
       const dpr = window.devicePixelRatio || 1;
       const W = wrap.clientWidth;
       const H = wrap.clientHeight;
@@ -231,10 +228,7 @@ export default function TimelineTunnel(): React.ReactElement {
         cv.style.height = `${H}px`;
       }
       const ctx = cv.getContext('2d');
-      if (!ctx) {
-        raf = requestAnimationFrame(frame);
-        return;
-      }
+      if (!ctx) return;
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
       // background — deep ink with vignette
@@ -249,7 +243,11 @@ export default function TimelineTunnel(): React.ReactElement {
       // camera physics — spring toward target, extra velocity while diving
       const cam = camRef.current;
       const tgt = targetRef.current.z;
-      if (divingRef.current) {
+      if (reduceMotion) {
+        cam.z = tgt;
+        divingRef.current = false;
+        flashRef.current = 0;
+      } else if (divingRef.current) {
         velRef.current += 26; // blackhole acceleration
         cam.z += velRef.current;
         if (cam.z >= tgt) {
@@ -287,7 +285,7 @@ export default function TimelineTunnel(): React.ReactElement {
         const alpha = fadeFar * fadeNear;
         if (alpha <= 0.02) continue;
         const r = Math.max(6, 130 * p.f);
-        drawRing(ctx, p.sx, p.sy, r, alpha, colorFor(L.c.domain), t, L.spin, L.seed);
+        drawRing(ctx, p.sx, p.sy, r, alpha, colorFor(L.c.domain), reduceMotion ? 0 : t, L.spin, L.seed, L.c.members);
 
         // label for the nearest in-focus ring
         if (p.dz > 200 && p.dz < 1400 && !nearestVisible) {
@@ -304,7 +302,7 @@ export default function TimelineTunnel(): React.ReactElement {
           ctx.font = '10px monospace';
           ctx.fillStyle = 'rgba(255,247,242,0.55)';
           ctx.fillText(
-            `${fmtDate(L.c.published_at)} · ${L.c.deg} outlets · ${L.c.domain?.replace('www.', '')}`,
+            `${fmtDate(L.c.published_at)} · ${L.c.deg} similarity links · ${L.c.domain?.replace('www.', '')}`,
             p.sx,
             p.sy - r + 4
           );
@@ -332,11 +330,11 @@ export default function TimelineTunnel(): React.ReactElement {
       // store hit-target for click handling
       (cv as unknown as { __hit?: typeof nearestScreen }).__hit = nearestScreen;
 
-      raf = requestAnimationFrame(frame);
+      if (animate && layout.length > 0) raf = requestAnimationFrame(frame);
     };
-    raf = requestAnimationFrame(frame);
+    if (visible) raf = requestAnimationFrame(frame);
     return () => cancelAnimationFrame(raf);
-  }, [layout, depth]);
+  }, [layout, depth, animate, reducedMotion, visible]);
 
   const onClickCanvas = (e: React.MouseEvent<HTMLDivElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
@@ -372,7 +370,7 @@ export default function TimelineTunnel(): React.ReactElement {
           <div className="flex items-center gap-2 mb-1 flex-wrap">
             <Orbit className="w-5 h-5" />
             <h2 className="text-2xl font-display">Story Time Tunnel</h2>
-            {!q.isLoading && (
+            {q.data && (
               <span className="chip-brutal border-hermes-red text-hermes-red-bright">
                 {clusters.length} clusters · newest on top
               </span>
@@ -388,7 +386,7 @@ export default function TimelineTunnel(): React.ReactElement {
           </div>
           <p className="text-xs font-mono text-hermes-bone/55 uppercase tracking-wider">
             click a story → fall through time into the next · wheel drifts deeper
-            {sel ? ' · ends at the original first report' : ''}
+            {sel ? ' · ends at the earliest linked coverage returned' : ''}
           </p>
         </div>
         <div className="flex items-center gap-2 shrink-0">
@@ -402,6 +400,7 @@ export default function TimelineTunnel(): React.ReactElement {
               All stories
             </button>
           )}
+          <button disabled={!clusters.length} onClick={() => { if (clusters[depth]) setInspect(clusters[depth]); }} className="btn-brutal !py-1.5 !px-3">Inspect current story</button>
           <button onClick={resetSurface} className="btn-ghost-brutal !py-1.5 !px-3 !text-hermes-bone !border-hermes-bone/30 w-fit">
             <RotateCcw className="w-3.5 h-3.5" /> Surface
           </button>
@@ -412,6 +411,10 @@ export default function TimelineTunnel(): React.ReactElement {
         {/* tunnel */}
         <div
           ref={wrapRef}
+          role="region"
+          aria-label="Interactive story timeline — arrow keys navigate, Enter inspects"
+          tabIndex={0}
+          onKeyDown={onTimelineKey}
           onClick={onClickCanvas}
           onMouseMove={(e) => {
             const r = e.currentTarget.getBoundingClientRect();
@@ -424,13 +427,17 @@ export default function TimelineTunnel(): React.ReactElement {
           data-clusters={layout.length}
           className="relative bg-ink h-[620px] overflow-hidden cursor-pointer"
         >
-          <canvas ref={cvRef} className="block" />
-          {!q.isLoading && clusters.length === 0 && !sel && (
+          <canvas ref={cvRef} className="block" aria-hidden="true" />
+          {q.isLoading && <p role="status" className="absolute inset-0 flex items-center justify-center text-xs font-mono">Loading story timeline…</p>}
+          {q.isError && <div className="absolute inset-x-4 top-4"><QueryError title="Story timeline unavailable" error={q.error} onRetry={() => q.refetch()} retrying={q.isFetching} />
+            {q.data && <p className="text-xs text-amber-300 mt-2">Last real timeline may be stale.</p>}
+          </div>}
+          {q.isSuccess && clusters.length === 0 && !sel && (
             <p className="absolute inset-0 flex items-center justify-center font-mono text-xs text-hermes-bone/50">
               No linked story clusters yet.
             </p>
           )}
-          {!q.isLoading && clusters.length === 0 && sel && (
+          {q.isSuccess && clusters.length === 0 && sel && (
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 px-8 text-center">
               <p className="font-mono text-xs text-hermes-bone/60 leading-relaxed max-w-sm">
                 No linked coverage found for this story within 3 similarity hops.
@@ -457,6 +464,7 @@ export default function TimelineTunnel(): React.ReactElement {
               <button
                 key={c.id}
                 onClick={() => setDepth(i)}
+                aria-current={i === depth ? 'step' : undefined}
                 className={`w-full text-left px-3 py-2 border transition-colors ${
                   i === depth
                     ? 'border-hermes-red bg-hermes-red/10'
@@ -478,7 +486,7 @@ export default function TimelineTunnel(): React.ReactElement {
                   {c.title.length > 66 ? c.title.slice(0, 63) + '…' : c.title}
                 </div>
                 <div className="font-mono text-[9px] text-hermes-bone/40 mt-0.5">
-                  {c.deg} outlets
+                  {c.deg} similarity links
                 </div>
               </button>
             ))}

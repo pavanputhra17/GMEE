@@ -6,6 +6,30 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); semver
 ## [Unreleased]
 
 ### Added
+- Separate production, loopback-development, unit-test and disposable tmpfs
+  HTTP-smoke Compose configurations; dedicated Python/Node Docker test targets
+- Bounded fixture-only HTTP smoke for registration/login/current-user, readiness,
+  valid empty corpus, denied admin triggers, evidence authentication and the real
+  typed mutation comparison API; never writes scientific labels or feedback and
+  does not claim browser E2E coverage
+- Safe `backend/scripts/backup_database.py`: custom-format `pg_dump` subprocess,
+  timeout, exclusive output creation, credential-free arguments/logs, partial
+  archive cleanup and documented isolated restore procedure
+- Static deployment policy checks, PowerShell syntax checks and offline safety
+  regressions; `docs/AUDIT.md`, `docs/OPERATIONS.md`, `docs/RESEARCH.md` distinguish
+  engineering implementation from product validation and unperformed experiments
+- **Exploratory automatic-label evaluation pipeline:** multi-signal labeler
+  (`scripts/auto_label_eval_pairs.py`) and report generator
+  (`scripts/generate_pub_report.py`) produce weak-label diagnostics in JSON +
+  Markdown. Automatic NLI/entity/lexical votes are not independent human gold;
+  similarity-bucket-dependent labeling can leak the evaluated score. Historical
+  `backend/eval_publication_report.md` is retained as an exploratory artifact,
+  not a publication result. Human held-out evaluation, calibration and mutation
+  experiments remain UNPERFORMED; see `docs/RESEARCH.md`.
+- `docs/EVALUATION.md` — full evaluation methodology documentation covering
+  pair sampling, annotation protocol, metrics, reproducibility, and limitations
+- `tests/test_auto_labeler.py` — methodology validation tests for the
+  annotation signals
 - Graph → focused timeline drill-down: "View in Timeline" in either graph view
   opens the time tunnel for that story only (`/graph/timeline?article_id=` BFS
   ≤3 SIMILAR hops, `focused: true`). Rings always run newest→oldest so the
@@ -102,6 +126,20 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); semver
   `{label, count}`. Now returns nested `{labels: {...}, total}` per annotator
 
 ### Changed
+- Production startup fails closed unless `alembic upgrade head` succeeds, then
+  starts one Uvicorn worker to avoid duplicate ML model memory. Production
+  backend source mounts and public datastore/API bindings are removed; runtime
+  root `.env` is required and scheduler execution defaults off
+- nginx replaces forwarding headers instead of accepting a client-supplied
+  chain; backend proxy trust is restricted to the addressed nginx peer. SPA CSP
+  permits current Google Fonts and same-origin `/api` requests, denies framing,
+  limits request bodies and API timeouts, and disables server tokens. Render
+  probes readiness and declares the separate static site's API origin in CSP
+- CI includes infrastructure/Render path filters, `npm ci`, bounded deployment
+  gates and JUnit enforcement that fails empty/skipped integration suites
+- Endpoint/UI sweep scripts are now read-only HTTP probes: no `.env`/database
+  discovery, live eval labels, feedback writes or hard-coded secondary hosts;
+  return nonzero for contract failures and do not overwrite existing reports
 - Color discipline pass: brand red rationed to claim nodes / active-tab underline / icon tile / demo banner; metric values ink-first; selected graph edges, selection rings and risk halos moved off crimson to ink/rose-800; claim inspector chip red→ink
 - Flat-border consistency: stray inset shadows removed; audit terminal bar `bg-black`→ink; audit feed entrance animation fires only on the newest row
 

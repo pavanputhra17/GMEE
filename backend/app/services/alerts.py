@@ -75,7 +75,8 @@ def build_alerts(
             "severity": "critical",
             "title": "Claim mutations accelerating",
             "detail": f"{mut_recent} new EVOLVED_FROM links detected in the last 24h "
-                      f"(previous 24h: {mut_prior}). A story is actively drifting.",
+                      f"(previous 24h: {mut_prior}). These are inferred text-change links, "
+                                            "not observed transmission.",
         })
 
     if not alerts:
@@ -220,24 +221,32 @@ async def evaluate_alerts(db: Any, window_hours: int = 6) -> dict[str, Any]:
         c_res = await db.execute(select(Claim).where(Claim.id.in_(claim_ids)))
         by_id = {c.id: c for c in c_res.scalars().all()}
         for e in edges:
-            a, b = by_id.get(e.from_claim_id), by_id.get(e.to_claim_id)
-            if not a or not b:
+            # EVOLVED_FROM is stored CHILD -> PARENT; text changes and alerts
+            # must instead describe the older PARENT -> newer CHILD direction.
+            child, parent = by_id.get(e.from_claim_id), by_id.get(e.to_claim_id)
+            if not child or not parent:
                 continue
-            d = diff_versions(a.claim_text or "", b.claim_text or "")
-            types = d["mutation_types"]
-            if not types or types == ["NEAR_DUPLICATE"]:
+            d = diff_versions(parent.claim_text or "", child.claim_text or "")
+            analysis = e.mutation_evidence if isinstance(e.mutation_evidence, dict) else d["analysis"]
+            analysis = {**analysis, "observed_propagation": False}
+            types = analysis.get("mutation_types", d["mutation_types"])
+            if not types or types == ["NEAR_DUPLICATE"] or not analysis.get("meaningful_change", d["meaningful_change"]):
                 continue
             interesting = [t for t in types if t != "WORDING_DRIFT"] or types
             raised.append({
                 "kind": "MUTATION",
-                "severity": "WARNING" if "NUMERIC_DRIFT" in interesting else "INFO",
+                "severity": "WARNING" if {"NUMERIC_DRIFT", "POLARITY_SHIFT"}.intersection(interesting) else "INFO",
                 "subject_key": f"edge:{e.from_claim_id}:{e.to_claim_id}",
-                "title": f"Claim mutated across outlets: {', '.join(interesting)}",
-                "body": ("\u201c" + (a.claim_text or "")[:120] + "\u201d \u2192 \u201c"
-                         + (b.claim_text or "")[:120] + "\u201d"),
-                "claim_id": b.id,
-                "payload": {"mutation_types": types, "similarity": d["similarity"],
-                            "from_claim": str(a.id), "to_claim": str(b.id)},
+                "title": f"Inferred claim change: {', '.join(interesting)}",
+                "body": ("\u201c" + (parent.claim_text or "")[:120] + "\u201d \u2192 \u201c"
+                         + (child.claim_text or "")[:120] + "\u201d"),
+                "claim_id": child.id,
+                "payload": {
+                    "mutation_types": types, "similarity": analysis.get("similarity", d["similarity"]),
+                    "from_claim": str(parent.id), "to_claim": str(child.id),
+                    "parent_claim_id": str(parent.id), "child_claim_id": str(child.id),
+                    "analysis": analysis, "observed_propagation": False,
+                },
             })
 
     # ---- story-cluster spikes ---------------------------------------------
@@ -273,6 +282,9 @@ async def evaluate_alerts(db: Any, window_hours: int = 6) -> dict[str, Any]:
         ).scalar_one_or_none()
         if existing:
             existing.last_seen_at = now
+            # Refresh corrected direction/evidence without resetting acknowledgement.
+            for field in ("title", "body", "payload", "severity", "claim_id"):
+                setattr(existing, field, item[field])
             refreshed += 1
         else:
             db.add(Alert(**item, first_seen_at=now, last_seen_at=now))

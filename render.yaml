@@ -12,12 +12,18 @@ services:
     dockerContext: .
     rootDir: backend
     region: oregon
+    # Free tier is a demo option, not a validated ML capacity plan. Size a paid
+    # deployment only after measuring model RAM and restore/recovery behavior.
     plan: free
     envVars:
       - key: ENVIRONMENT
         value: production
       - key: ENABLE_SCHEDULER
-        value: "true"
+        value: "false"
+      # Do not trust arbitrary forwarding headers from the public internet.
+      # Replace only with provider-confirmed proxy addresses if required.
+      - key: FORWARDED_ALLOW_IPS
+        value: "127.0.0.1"
       - key: CORS_ORIGINS
         value: '["https://gmee-frontend.onrender.com"]'
       # ── Secrets (set these in the Render Dashboard) ──
@@ -37,7 +43,8 @@ services:
         sync: false
       - key: ANTHROPIC_API_KEY
         sync: false
-    healthCheckPath: /api/v1/health
+    # Docker CMD runs alembic upgrade head before the single Uvicorn worker.
+    healthCheckPath: /api/v1/health/ready
 
   # ──────── Frontend (Vite Static Site) ────────
   - type: web
@@ -46,7 +53,6 @@ services:
     rootDir: frontend
     buildCommand: npm ci && npm run build
     staticPublishPath: dist
-    region: oregon
     envVars:
       - key: VITE_API_BASE_URL
         value: https://gmee-backend.onrender.com/api/v1
@@ -54,6 +60,18 @@ services:
       - path: /*
         name: X-Content-Type-Options
         value: nosniff
+      - path: /*
+        name: X-Frame-Options
+        value: DENY
+      - path: /*
+        name: Referrer-Policy
+        value: strict-origin-when-cross-origin
+      - path: /*
+        name: Permissions-Policy
+        value: camera=(), microphone=(), geolocation=()
+      - path: /*
+        name: Content-Security-Policy
+        value: "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' https://gmee-backend.onrender.com; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
     routes:
       # SPA fallback — all paths serve index.html
       - type: rewrite

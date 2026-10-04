@@ -4,6 +4,10 @@ import { Network, ExternalLink, Layers, Zap, Search, RotateCcw, Orbit } from 'lu
 import { graphApi, FullGraph, GraphNode } from '../api/graph';
 import { setSelectedArticle } from '../lib/useSelectedArticle';
 import type { TabType } from './Header';
+import { usePollingPolicy } from '../lib/polling';
+import { useAnimationActivity } from '../lib/useAnimationActivity';
+import { safeHttpUrl } from '../lib/urls';
+import { QueryError } from './QueryError';
 
 /**
  * FullCorpusGraph — THE ENTIRE corpus as one interactive force-directed graph.
@@ -47,7 +51,7 @@ function buildSim(graph: FullGraph): { nodes: SimNode[]; index: Map<string, SimN
     // golden-angle spiral init — deterministic, well-spread
     const a = i * 2.39996;
     const r = R * Math.sqrt((i + 1) / graph.nodes.length);
-    return { ...n, x: Math.cos(a) * r + (Math.random() - 0.5) * 30, y: Math.sin(a) * r * 0.72 + (Math.random() - 0.5) * 30, vx: 0, vy: 0 };
+    return { ...n, x: Math.cos(a) * r + Math.sin(i * 17) * 15, y: Math.sin(a) * r * 0.72 + Math.cos(i * 31) * 15, vx: 0, vy: 0 };
   });
   const index = new Map(nodes.map((n) => [n.id, n]));
   return { nodes, index };
@@ -62,6 +66,9 @@ const FullCorpusGraph: React.FC<{ setActiveTab?: (tab: TabType) => void }> = ({ 
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
+  const { animate, visible } = useAnimationActivity(wrapRef);
+  const [renderVersion, setRenderVersion] = useState(0);
+  const polling = usePollingPolicy(60000);
   const simRef = useRef<{ nodes: SimNode[]; edges: { a: SimNode; b: SimNode; s: number }[] }>({ nodes: [], edges: [] });
   const viewRef = useRef({ ox: 0, oy: 0, scale: 1 });
   const alphaRef = useRef(1);
@@ -69,8 +76,8 @@ const FullCorpusGraph: React.FC<{ setActiveTab?: (tab: TabType) => void }> = ({ 
 
   const g = useQuery({
     queryKey: ['full-graph', mode],
-    queryFn: () => (mode === 'articles' ? graphApi.full() : graphApi.claims()),
-    refetchInterval: 60000,
+    queryFn: ({ signal }) => (mode === 'articles' ? graphApi.full({ signal }) : graphApi.claims({ signal })),
+    ...polling,
     staleTime: 30000,
   });
 
@@ -121,9 +128,10 @@ const FullCorpusGraph: React.FC<{ setActiveTab?: (tab: TabType) => void }> = ({ 
     let raf = 0;
 
     const step = () => {
+      if (!visible || !canvasRef.current) return;
       const { nodes, edges } = simRef.current;
       const alpha = alphaRef.current;
-      if (alpha > 0.005) {
+      if (animate && alpha > 0.005) {
         // repulsion (grid-accelerated approximation)
         const CELL = 90;
         const grid = new Map<string, SimNode[]>();
@@ -180,14 +188,13 @@ const FullCorpusGraph: React.FC<{ setActiveTab?: (tab: TabType) => void }> = ({ 
         }
         alphaRef.current = alpha * 0.994;
       }
-      render();
-      raf = requestAnimationFrame(step);
+      if (render() && animate && nodes.length > 0) raf = requestAnimationFrame(step);
     };
 
     const render = () => {
       const cv = canvasRef.current;
       const wrap = wrapRef.current;
-      if (!cv || !wrap) return;
+      if (!cv || !wrap) return false;
       const dpr = window.devicePixelRatio || 1;
       const W = wrap.clientWidth;
       const H = wrap.clientHeight;
@@ -198,7 +205,7 @@ const FullCorpusGraph: React.FC<{ setActiveTab?: (tab: TabType) => void }> = ({ 
         cv.style.height = `${H}px`;
       }
       const ctx = cv.getContext('2d');
-      if (!ctx) return;
+      if (!ctx) return false;
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, W, H);
 
@@ -228,7 +235,7 @@ const FullCorpusGraph: React.FC<{ setActiveTab?: (tab: TabType) => void }> = ({ 
         const isSel = selected === n;
         const match = q ? n.title.toLowerCase().includes(q) : false;
         const r = mode === 'articles'
-          ? (n.deg > 0 ? 3.4 + Math.min(7, n.deg * 1.15) : 2.4)
+          ? (n.deg != null && n.deg > 0 ? 3.4 + Math.min(7, n.deg * 1.15) : 2.4)
           : 3.2;
         if (match) {
           ctx.beginPath();
@@ -256,11 +263,12 @@ const FullCorpusGraph: React.FC<{ setActiveTab?: (tab: TabType) => void }> = ({ 
       ctx.fillStyle = 'rgba(255,247,242,0.45)';
       ctx.font = '10px monospace';
       ctx.fillText(`zoom ${(scale * 100).toFixed(0)}% · ${simRef.current.nodes.length.toLocaleString()} nodes`, 12, H - 12);
+      return true;
     };
 
-    raf = requestAnimationFrame(step);
+    if (visible) raf = requestAnimationFrame(step);
     return () => cancelAnimationFrame(raf);
-  }, [selected, query, mode]);
+  }, [selected, query, mode, animate, visible, renderVersion, g.data, outletFilter]);
 
   // ------- interactions -------
   const pickNode = (mx: number, my: number): SimNode | null => {
@@ -315,6 +323,7 @@ const FullCorpusGraph: React.FC<{ setActiveTab?: (tab: TabType) => void }> = ({ 
       dr.lx = mx;
       dr.ly = my;
     }
+    if (!animate && (dr.node || dr.panning)) setRenderVersion((value) => value + 1);
   };
 
   const onMouseUp = () => {
@@ -340,15 +349,18 @@ const FullCorpusGraph: React.FC<{ setActiveTab?: (tab: TabType) => void }> = ({ 
       e.preventDefault();
       const v = viewRef.current;
       v.scale = Math.min(4, Math.max(0.25, v.scale * (e.deltaY < 0 ? 1.12 : 0.89)));
+      if (!animate) setRenderVersion((value) => value + 1);
     };
     el.addEventListener('wheel', handleNativeWheel, { passive: false });
     return () => el.removeEventListener('wheel', handleNativeWheel);
-  }, []);
+  }, [animate]);
 
   const resetView = () => {
     viewRef.current = { ox: 0, oy: 0, scale: 1 };
     alphaRef.current = 1;
+    setRenderVersion((value) => value + 1);
   };
+  const timelineArticleId = selected?.article_id || (mode === 'articles' ? selected?.id : undefined);
 
   return (
     <div className="card-brutal-dark p-6 flex flex-col gap-5">
@@ -376,13 +388,15 @@ const FullCorpusGraph: React.FC<{ setActiveTab?: (tab: TabType) => void }> = ({ 
           {/* mode switch */}
           <div className="flex border border-hermes-bone/25 shrink-0">
             <button
-              onClick={() => setMode('articles')}
+              onClick={() => { setMode('articles'); setSelected(null); }}
+                            aria-pressed={mode === 'articles'}
               className={`px-3 py-1.5 font-mono text-[11px] uppercase tracking-wider ${mode === 'articles' ? 'bg-hermes-red text-white' : 'text-hermes-bone/60 hover:text-hermes-bone'}`}
             >
               <Layers className="w-3 h-3 inline mr-1" /> Articles
             </button>
             <button
-              onClick={() => setMode('claims')}
+              onClick={() => { setMode('claims'); setSelected(null); }}
+                            aria-pressed={mode === 'claims'}
               className={`px-3 py-1.5 font-mono text-[11px] uppercase tracking-wider ${mode === 'claims' ? 'bg-hermes-red text-white' : 'text-hermes-bone/60 hover:text-hermes-bone'}`}
             >
               <Zap className="w-3 h-3 inline mr-1" /> Claims
@@ -398,17 +412,19 @@ const FullCorpusGraph: React.FC<{ setActiveTab?: (tab: TabType) => void }> = ({ 
             className="flex items-center border border-hermes-bone/25 bg-hermes-panel-deep shrink-0"
           >
             <input
+              aria-label="Graph title search"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder='try "earthquake", "election"…'
               className="bg-transparent text-hermes-bone font-mono text-xs px-3 py-1.5 outline-none w-52 placeholder:text-hermes-bone/35"
             />
-            <button type="submit" className="btn-brutal !py-1 !px-2 m-0.5">
+            <button type="submit" aria-label="Search graph titles" className="btn-brutal !py-1 !px-2 m-0.5">
               <Search className="w-3.5 h-3.5" />
             </button>
           </form>
 
           <select
+            aria-label="Graph outlet filter"
             value={outletFilter}
             onChange={(e) => setOutletFilter(e.target.value)}
             className="bg-hermes-panel-deep border border-hermes-bone/25 text-hermes-bone font-mono text-xs px-2 py-1.5 outline-none cursor-pointer shrink-0 max-w-[190px]"
@@ -421,12 +437,19 @@ const FullCorpusGraph: React.FC<{ setActiveTab?: (tab: TabType) => void }> = ({ 
             ))}
           </select>
 
-          <button onClick={resetView} className="btn-ghost-brutal !py-1.5 !px-2.5 !text-hermes-bone !border-hermes-bone/30">
+          <button onClick={resetView} aria-label="Reset graph view" className="btn-ghost-brutal !py-1.5 !px-2.5 !text-hermes-bone !border-hermes-bone/30">
             <RotateCcw className="w-3.5 h-3.5" />
           </button>
         </div>
       </div>
 
+      {g.data && <div className="flex flex-wrap items-center gap-3">
+        <label htmlFor="graph-node-select" className="text-xs font-mono">Inspect a node (keyboard alternative)</label>
+        <select id="graph-node-select" value={selected?.id ?? ''} onChange={(event) => setSelected(simRef.current.nodes.find((node) => node.id === event.target.value) ?? null)} className="field-brutal max-w-full">
+          <option value="">Choose a real graph node</option>
+          {g.data.nodes.filter((node) => (!outletFilter || node.domain === outletFilter) && (!query || node.title.toLowerCase().includes(query.toLowerCase()))).map((node) => <option key={node.id} value={node.id}>{node.title}</option>)}
+        </select>
+      </div>}
       {/* canvas */}
       <div
         ref={wrapRef}
@@ -438,12 +461,13 @@ const FullCorpusGraph: React.FC<{ setActiveTab?: (tab: TabType) => void }> = ({ 
         onClick={onClick}
       >
         {g.isLoading ? (
-          <div className="shimmer h-full w-full" />
+          <div role="status" aria-label="Loading corpus graph" className="shimmer h-full w-full" />
         ) : g.isError ? (
-          <p className="font-mono text-xs text-hermes-red-bright p-6">graph unavailable — backend down?</p>
+          <div className="p-6"><QueryError title="Corpus graph unavailable" error={g.error} onRetry={() => g.refetch()} retrying={g.isFetching} /></div>
         ) : (
           <>
-            <canvas ref={canvasRef} className="block" />
+            <canvas ref={canvasRef} className="block" aria-hidden="true" />
+            {g.data?.nodes.length === 0 && <p className="absolute inset-0 flex items-center justify-center text-xs font-mono">No graph nodes returned.</p>}
             {/* legend */}
             <div className="absolute top-3 left-3 bg-hermes-panel/90 border border-hermes-bone/20 px-3 py-2 space-y-1 pointer-events-none">
               {outlets.slice(0, 13).map(([name]) => (
@@ -468,7 +492,7 @@ const FullCorpusGraph: React.FC<{ setActiveTab?: (tab: TabType) => void }> = ({ 
           <div className="min-w-0">
             <div className="font-mono text-[10px] uppercase tracking-widest text-hermes-bone/45 mb-1">
               Node Inspector
-              {'deg' in selected && ` · ${selected.deg} similarity links`}
+              {selected.deg != null && ` · ${selected.deg} similarity links`}
             </div>
             <h3 className="font-display text-lg leading-snug">{selected.title}</h3>
             <span className="chip-brutal mt-2 w-fit" style={{ borderColor: colorFor(selected.domain), color: colorFor(selected.domain) }}>
@@ -477,9 +501,12 @@ const FullCorpusGraph: React.FC<{ setActiveTab?: (tab: TabType) => void }> = ({ 
           </div>
           <div className="flex items-center gap-2 shrink-0">
             <button
+              disabled={!timelineArticleId || !setActiveTab}
+              title={timelineArticleId ? 'Open this article’s story timeline' : 'This claim has no article_id; timeline drill-down is unsupported'}
               onClick={() => {
+                if (!timelineArticleId) return;
                 setSelectedArticle({
-                  id: selected.id,
+                  id: timelineArticleId,
                   title: selected.title,
                   domain: selected.domain,
                 });
@@ -489,8 +516,8 @@ const FullCorpusGraph: React.FC<{ setActiveTab?: (tab: TabType) => void }> = ({ 
             >
               View in Timeline <Orbit className="w-3.5 h-3.5" />
             </button>
-            {selected.url && (
-              <a href={selected.url} target="_blank" rel="noreferrer" className="btn-ghost-brutal shrink-0 !text-hermes-bone !border-hermes-bone/30">
+            {safeHttpUrl(selected.url) && (
+              <a href={safeHttpUrl(selected.url)} target="_blank" rel="noreferrer" className="btn-ghost-brutal shrink-0 !text-hermes-bone !border-hermes-bone/30">
                 Read original <ExternalLink className="w-3.5 h-3.5" />
               </a>
             )}

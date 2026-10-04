@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import JSON, DateTime, Enum, ForeignKey, String, Text
+from sqlalchemy import JSON, DateTime, Enum, ForeignKey, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
@@ -63,5 +63,12 @@ class Article(Base):
         nullable=False,
         server_default="pending"
     )
+
+    # Durable pipeline ownership (gmee03). Set atomically when a worker claims
+    # the row for preprocessing/NLP; final writes are fenced on ``claimed_by``.
+    claimed_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    claim_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0", default=0)
+    last_error: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
     source: Mapped["Source"] = relationship("Source", back_populates="articles")

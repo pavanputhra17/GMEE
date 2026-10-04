@@ -1,0 +1,23 @@
+# Standalone unit-test services. No runtime .env, persistent stores or host ports.
+services:
+  backend-tests:
+    build:
+      context: ../backend
+      target: test
+    environment:
+      ENVIRONMENT: testing
+      POSTGRES_URL: postgresql+asyncpg://fixture:fixture@127.0.0.1:5432/unused
+      NEO4J_URI: bolt://127.0.0.1:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: fixture-only-password
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CORS_ORIGINS: '["http://localhost:3000"]'
+      JWT_SECRET: fixture-unit-test-secret-not-for-deployment-0001
+      ENABLE_SCHEDULER: "false"
+      RATE_LIMIT_ENABLED: "false"
+    command: ["pytest", "-m", "not integration", "--strict-markers"]
+  frontend-tests:
+    build:
+      context: ../frontend
+      target: test
+    command: ["npm", "run", "test"]

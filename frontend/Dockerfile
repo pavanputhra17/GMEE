@@ -1,21 +1,21 @@
-# Production image: build the SPA, then serve it statically with nginx.
-# (The previous image ran `npm run dev` — Vite's dev server with HMR — fine
-# for a local demo, but not what "production" means.)
-FROM node:20-alpine AS build
+FROM node:20-alpine AS dependencies
 WORKDIR /app
-COPY package*.json ./
+COPY package.json package-lock.json ./
 RUN npm ci
-COPY . .
 
-# Baked at build time. Default = same-origin /api/v1, which nginx proxies to
-# the backend (see nginx.conf), so runtime CORS config is unnecessary.
+# Dedicated Node test target; nginx production images intentionally have no npm.
+FROM dependencies AS test
+COPY . .
+CMD ["npm", "run", "test"]
+
+FROM test AS build
+# Build-time setting, not a secret. The Docker deployment uses a same-origin API.
 ARG VITE_API_BASE_URL=/api/v1
 ENV VITE_API_BASE_URL=$VITE_API_BASE_URL
 RUN npm run build
 
-FROM nginx:1.27-alpine
+FROM nginx:stable-alpine AS production
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/dist /usr/share/nginx/html
 EXPOSE 80
 CMD ["nginx", "-g", "daemon off;"]
-

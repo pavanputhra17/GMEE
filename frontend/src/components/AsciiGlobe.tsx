@@ -182,9 +182,9 @@ export const AsciiGlobe: React.FC<{ className?: string }> = ({ className }) => {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    const reduced =
-      typeof window.matchMedia === 'function' &&
-      window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const media = window.matchMedia?.('(prefers-reduced-motion: reduce)');
+    let reduced = media?.matches ?? false;
+    let inView = true;
 
     const styles = getComputedStyle(document.documentElement);
     const bone = styles.getPropertyValue('--hermes-bone').trim() || '#FFF7F2';
@@ -228,10 +228,7 @@ export const AsciiGlobe: React.FC<{ className?: string }> = ({ className }) => {
     resize();
 
     let ro: ResizeObserver | null = null;
-    if (typeof ResizeObserver !== 'undefined') {
-      ro = new ResizeObserver(resize);
-      ro.observe(wrap);
-    }
+
 
     /* --------------------------- projections --------------------------- */
     /** model-space unit vector -> view/screen */
@@ -324,7 +321,7 @@ export const AsciiGlobe: React.FC<{ className?: string }> = ({ className }) => {
     };
 
     const paintCount = () => {
-      countEl.textContent = `◉ ${st.intercepts} SIGNAL${st.intercepts === 1 ? '' : 'S'}`;
+      countEl.textContent = '◉ decorative pulse · not telemetry';
       countEl.style.color = redBright;
       window.setTimeout(() => {
         countEl.style.color = '';
@@ -367,6 +364,7 @@ export const AsciiGlobe: React.FC<{ className?: string }> = ({ className }) => {
         st.lastMoveMs = nowMs;
       }
       updateCoordBadge();
+      if (reduced) drawFrame();
     };
 
     const endDrag = (e: PointerEvent) => {
@@ -423,7 +421,7 @@ export const AsciiGlobe: React.FC<{ className?: string }> = ({ className }) => {
     };
 
     let raf = 0;
-    let running = true;
+    let running = false;
     let last = 0;
     let acc = 0;
 
@@ -701,11 +699,10 @@ export const AsciiGlobe: React.FC<{ className?: string }> = ({ className }) => {
       raf = requestAnimationFrame(loop);
     };
 
-    drawFrame(); // initial paint
-    raf = requestAnimationFrame(loop);
-
+    drawFrame();
     const onVis = () => {
-      if (document.hidden) {
+      const shouldRun = !document.hidden && inView && !reduced;
+      if (!shouldRun) {
         running = false;
         cancelAnimationFrame(raf);
       } else if (!running) {
@@ -714,10 +711,24 @@ export const AsciiGlobe: React.FC<{ className?: string }> = ({ className }) => {
         raf = requestAnimationFrame(loop);
       }
     };
+    const onMotion = () => { reduced = media?.matches ?? false; onVis(); if (reduced) drawFrame(); };
+    const observer = typeof IntersectionObserver !== 'undefined' ? new IntersectionObserver(([entry]) => {
+      inView = entry?.isIntersecting ?? false;
+      onVis();
+    }) : null;
+    observer?.observe(wrap);
+    if (typeof ResizeObserver !== 'undefined') {
+      ro = new ResizeObserver(() => { resize(); if (!running) drawFrame(); });
+      ro.observe(wrap);
+    }
     document.addEventListener('visibilitychange', onVis);
+    media?.addEventListener('change', onMotion);
+    onVis();
 
     return () => {
       document.removeEventListener('visibilitychange', onVis);
+      media?.removeEventListener('change', onMotion);
+      observer?.disconnect();
       running = false;
       cancelAnimationFrame(raf);
       ro?.disconnect();
@@ -734,7 +745,7 @@ export const AsciiGlobe: React.FC<{ className?: string }> = ({ className }) => {
       <canvas
         ref={canvasRef}
         className="block w-full h-full"
-        aria-label="Interactive ASCII globe — drag to rotate, click to broadcast"
+        aria-label="Decorative ASCII globe — drag to rotate, click for an illustration pulse; not live telemetry"
         role="img"
       />
       <span
@@ -746,7 +757,7 @@ export const AsciiGlobe: React.FC<{ className?: string }> = ({ className }) => {
         ref={countRef}
         className="absolute z-20 bottom-2 right-2 font-mono text-[10px] font-bold tracking-widest text-hermes-bone/60 transition-colors duration-500 select-none"
       >
-        ◉ 0 SIGNALS
+        ◉ illustration · not telemetry
       </span>
     </div>
   );

@@ -1,42 +1,32 @@
 import { describe, expect, it, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { screen, fireEvent } from '@testing-library/react';
 import { Header } from '../src/components/Header';
+import { renderWithClient } from './helpers';
 
-const baseProps = {
-  refetchInterval: 5000,
-  setRefetchInterval: vi.fn(),
-  isFetching: false,
-  onManualRefresh: vi.fn(),
-};
+const baseProps = { refetchInterval: 5000, setRefetchInterval: vi.fn(), isFetching: false, onManualRefresh: vi.fn() };
 
-describe('<Header/> — dashboard chrome', () => {
-  it('reflects service status through the badge label', () => {
-    const { unmount } = render(<Header {...baseProps} activeTab="overview" setActiveTab={vi.fn()} status="ok" />);
-    expect(screen.getByText('Systems Nominal')).toBeTruthy();
-    unmount();
-
-    const r2 = render(<Header {...baseProps} activeTab="overview" setActiveTab={vi.fn()} status="degraded" />);
-    expect(screen.getByText('Degraded State')).toBeTruthy();
-    r2.unmount();
-
-    const r3 = render(<Header {...baseProps} activeTab="overview" setActiveTab={vi.fn()} status="error" />);
-    expect(screen.getByText('Connection Failed')).toBeTruthy();
-    r3.unmount();
+describe('dashboard chrome', () => {
+  it.each([
+    ['connecting', 'Connecting'], ['ready', 'Systems Ready'], ['not_ready', 'Not Ready · Partial Outage'], ['error', 'Connection Failed'],
+  ] as const)('reflects the %s readiness state', (status, label) => {
+    renderWithClient(<Header {...baseProps} activeTab="overview" setActiveTab={vi.fn()} status={status} />);
+    expect(screen.getByText(label)).toBeTruthy();
   });
 
-  it('activates tabs via setActiveTab callback', () => {
+  it('activates real dashboard sections and labels polling/refresh controls', () => {
     const setActive = vi.fn();
-    render(
-      <Header {...baseProps} activeTab="overview" setActiveTab={setActive} status="ok" />,
-    );
-    fireEvent.click(screen.getByText('FactCheck'));
+    renderWithClient(<Header {...baseProps} activeTab="overview" setActiveTab={setActive} status="ready" />);
+    fireEvent.click(screen.getByRole('button', { name: /FactCheck/ }));
     expect(setActive).toHaveBeenCalledWith('factcheck');
+    expect(screen.getByLabelText('Background polling interval')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Refresh telemetry' })).toBeTruthy();
+    expect(screen.queryByText(/6.4k nodes|6.4k articles/)).toBeNull();
   });
 
-  it('shows demo telemetry state distinctly when backend never answered', () => {
-    render(
-      <Header {...baseProps} activeTab="overview" setActiveTab={vi.fn()} status="error" demoMode />,
-    );
+  it('marks an explicit demo separately and never fabricates a ready status', () => {
+    renderWithClient(<Header {...baseProps} activeTab="overview" setActiveTab={vi.fn()} status="error" demoMode />);
+    expect(screen.getByText('Demo Telemetry')).toBeTruthy();
     expect(screen.getByText('Connection Failed')).toBeTruthy();
+    expect(screen.queryByText('Systems Ready')).toBeNull();
   });
 });

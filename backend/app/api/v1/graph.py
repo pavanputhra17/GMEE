@@ -3,19 +3,101 @@
 The whole corpus graph in one payload (6.4k nodes, ~800 edges ≈ 1-2MB JSON).
 """
 
+import asyncio
 import html as htmllib
 import logging
 import re
+import uuid
+from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import text
 
+from app.api.deps import get_current_user
 from app.db.neo4j_client import neo4j_client
+from app.services.evolution.text_changes import analyze_text_change
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+MAX_SIMULATION_DEPTH = 6
+MAX_SIMULATION_NODES = 2000
+MAX_SIMULATION_EDGES = 6000
+
+
+class MutationCompareRequest(BaseModel):
+    older_text: str = Field(min_length=1, max_length=2000)
+    newer_text: str = Field(min_length=1, max_length=2000)
+    older_timestamp: datetime | None = None
+    newer_timestamp: datetime | None = None
+
+    @field_validator("older_text", "newer_text")
+    @classmethod
+    def nonblank_text(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("text must contain non-whitespace characters")
+        # Preserve the input verbatim: analysis spans refer to these offsets.
+        return value
+
+class MutationSummaryRequest(BaseModel):
+    article_ids: list[str] = Field(min_length=1, max_length=50)
+
+@router.post("/timeline/mutation-summary", dependencies=[Depends(get_current_user)])
+async def get_timeline_mutation_summary(payload: MutationSummaryRequest) -> dict[str, Any]:
+    from app.db.postgres import async_session_maker
+    from app.models.claim import Claim
+    from sqlalchemy import select
+    from app.services.nlp.llm_client import get_llm_client
+    import uuid
+    
+    # validate UUIDs
+    valid_ids = []
+    for aid in payload.article_ids:
+        try:
+            valid_ids.append(uuid.UUID(aid))
+        except ValueError:
+            pass
+            
+    if not valid_ids:
+        return {"summary": "No valid article IDs provided."}
+        
+    async with async_session_maker() as db:
+        claims_stmt = (
+            select(Claim.claim_text)
+            .where(Claim.article_id.in_(valid_ids))
+            .limit(50)
+        )
+        claims = list((await db.scalars(claims_stmt)).all())
+        
+    if len(claims) < 2:
+        return {"summary": "Insufficient distinct claims in these articles to detect a temporal mutation."}
+        
+    llm = get_llm_client()
+    summary = await llm.generate_mutation_summary(claims)
+    return {"summary": summary}
+
+
+@router.post("/mutation/compare", dependencies=[Depends(get_current_user)])
+async def compare_mutations(payload: MutationCompareRequest) -> dict[str, Any]:
+    from app.services.nlp.llm_client import get_llm_client
+    analysis = await asyncio.to_thread(
+        analyze_text_change, payload.older_text, payload.newer_text,
+        older_timestamp=payload.older_timestamp,
+        newer_timestamp=payload.newer_timestamp,
+    )
+    
+    llm = get_llm_client()
+    try:
+        llm_summary = await llm.generate_mutation_summary([payload.older_text, payload.newer_text])
+    except Exception as e:
+        logger.error(f"Failed to generate LLM summary for mutation: {e}")
+        llm_summary = None
+        
+    return {"analysis": analysis, "llm_summary": llm_summary}
+
 
 _TAG_RE = re.compile(r"<[^a-z/!]|</?[a-z][^>]*>", re.IGNORECASE)
 
@@ -119,10 +201,11 @@ async def claims_graph(limit: int = 1200, threshold: float = 0.86) -> dict[str, 
         SELECT c.id::text AS id, c.claim_text AS title,
                a.domain AS domain,
                c.verdict AS verdict,
-               c.verdict_probability AS prob
+               c.verdict_probability AS prob,
+               c.article_id::text AS article_id
         FROM claims c JOIN articles a ON a.id = c.article_id
         WHERE c.embedding IS NOT NULL AND c.verdict IS NOT NULL
-        ORDER BY c.confidence DESC NULLS LAST
+        ORDER BY c.confidence DESC NULLS LAST, c.id
         LIMIT :lim
         """
 
@@ -138,12 +221,13 @@ async def claims_graph(limit: int = 1200, threshold: float = 0.86) -> dict[str, 
                         SELECT c.id
                         FROM claims c
                         WHERE c.embedding IS NOT NULL AND c.verdict IS NOT NULL
-                        ORDER BY c.confidence DESC NULLS LAST
+                        ORDER BY c.confidence DESC NULLS LAST, c.id
                         LIMIT :lim
                     )
                     SELECT r.from_claim_id::text AS src,
                            r.to_claim_id::text AS dst,
-                           r.score AS sim
+                           r.score AS sim,
+                           r.relationship_type, r.mutation_evidence
                     FROM claim_relationships r
                     JOIN chosen f ON f.id = r.from_claim_id
                     JOIN chosen t ON t.id = r.to_claim_id
@@ -165,12 +249,14 @@ async def claims_graph(limit: int = 1200, threshold: float = 0.86) -> dict[str, 
                             SELECT c.id, c.embedding
                             FROM claims c
                             WHERE c.embedding IS NOT NULL AND c.verdict IS NOT NULL
-                            ORDER BY c.confidence DESC NULLS LAST
+                            ORDER BY c.confidence DESC NULLS LAST, c.id
                             LIMIT :lim
                         )
                         SELECT a.id::text AS src,
                                b.id::text AS dst,
-                               1 - (a.embedding <=> b.embedding) AS sim
+                               1 - (a.embedding <=> b.embedding) AS sim,
+                               'SIMILAR_TO' AS relationship_type,
+                               NULL::jsonb AS mutation_evidence
                         FROM chosen a
                         JOIN LATERAL (
                             SELECT c2.id, c2.embedding
@@ -191,20 +277,54 @@ async def claims_graph(limit: int = 1200, threshold: float = 0.86) -> dict[str, 
         {
             "id": r[0], "title": _clean_text(r[1], 180) or "", "domain": _clean_text(r[2], 80),
             "verdict": r[3], "prob": float(r[4]) if r[4] is not None else None,
+            "article_id": r[5],
         }
         for r in rows
     ]
-    edges = [
-        {"src": r[0], "dst": r[1], "score": round(float(r[2] or 0.0), 3)}
-        for r in pair_rows
-        if r[0] in ids and r[1] in ids
-    ]
+    edges = []
+    for r in pair_rows:
+        if r[0] not in ids or r[1] not in ids:
+            continue
+        relationship_type = str(r[3])
+        analysis = {**r[4], "observed_propagation": False} if isinstance(r[4], dict) else None
+        edges.append({
+            "src": r[0], "dst": r[1], "score": round(float(r[2] or 0.0), 3),
+            "relationship_type": relationship_type,
+            "parent_claim_id": r[1] if relationship_type == "EVOLVED_FROM" else None,
+            "child_claim_id": r[0] if relationship_type == "EVOLVED_FROM" else None,
+            "analysis": analysis, "observed_propagation": False,
+            "inference": "inferred",
+        })
     return {
         "nodes": nodes,
         "edges": edges,
         "counts": {"nodes": len(nodes), "edges": len(edges)},
         "edge_source": edge_source,
     }
+
+
+async def _timeline_article_id(identifier: str) -> str:
+    """Resolve article IDs and legacy claim-ID drill-downs without changing UI IDs."""
+    from app.db.postgres import async_session_maker
+
+    try:
+        selected = str(uuid.UUID(identifier))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="article_id must be a UUID") from exc
+    async with async_session_maker() as db:
+        resolved = (
+            await db.execute(text("""
+                SELECT article_id FROM (
+                    SELECT a.id::text AS article_id, 0 AS priority
+                    FROM articles a WHERE a.id = CAST(:selected AS uuid)
+                    UNION ALL
+                    SELECT c.article_id::text AS article_id, 1 AS priority
+                    FROM claims c WHERE c.id = CAST(:selected AS uuid)
+                ) selected_articles
+                ORDER BY priority LIMIT 1
+            """), {"selected": selected})
+        ).scalar_one_or_none()
+    return str(resolved) if resolved is not None else selected
 
 
 @router.get("/timeline")
@@ -223,6 +343,9 @@ async def timeline_clusters(
     article on SIMILAR edges are returned — used for the graph→timeline
     drill-down, so the tunnel shows the selected story alone.
     """
+    limit = max(1, min(int(limit), 120))
+    if article_id is not None:
+        article_id = await _timeline_article_id(article_id)
     driver = await neo4j_client.get_driver()
 
     if article_id:
@@ -320,6 +443,7 @@ async def timeline_clusters(
         "clusters": clusters,
         "count": len(clusters),
         "focused": article_id is not None,
+        "article_id": article_id,
     }
 
 
@@ -328,6 +452,7 @@ async def timeline_clusters(
 async def scoop_races(limit: int = 12) -> dict[str, Any]:
     """Who broke each story first? For every linked cluster: outlets ranked
     by publish time with exact lag behind the winner."""
+    limit = max(1, min(int(limit), 50))
     driver = await neo4j_client.get_driver()
 
     async def _run(tx: Any) -> Any:
@@ -417,46 +542,76 @@ async def scoop_races(limit: int = 12) -> dict[str, Any]:
 
 @router.get("/simulate")
 async def simulate_spread(hub: str, p: float = 0.5, max_depth: int = 3) -> dict[str, Any]:
-    """Propagation sandbox: if each cross-outlet SIMILAR edge transmits the
-    story with probability p, how far does this story spread from `hub`?
-    First-order branching approximation over the real article graph."""
-    from fastapi import HTTPException
+    """Hypothetical branching simulation on a bounded hub neighborhood.
 
+    Read one-hop frontiers rather than the entire graph or an unbounded
+    variable-length path expansion. SIMILAR is not observed transmission.
+    """
     from app.services.simulate import simulate_cascade
 
     p = max(0.05, min(0.95, p))
-    max_depth = max(1, min(max_depth, 6))
-
+    max_depth = max(1, min(int(max_depth), MAX_SIMULATION_DEPTH))
     driver = await neo4j_client.get_driver()
 
     async def _run(tx: Any) -> Any:
-        edges_res = await tx.run(
-            "MATCH (a:Article)-[:SIMILAR]-(b:Article) RETURN a.id AS src, b.id AS dst"
-        )
         hub_res = await tx.run(
             "MATCH (a:Article {id: $hub}) RETURN a.title AS title, a.domain AS domain",
             hub=hub,
         )
         hub_rows = await hub_res.data()
-        return await edges_res.data(), (hub_rows[0] if hub_rows else None)
+        if not hub_rows:
+            return [], None, False
+        frontier, seen_nodes = [hub], {hub}
+        unique_edges: set[tuple[str, str]] = set()
+        truncated = False
+        for _ in range(max_depth):
+            if not frontier:
+                break
+            result = await tx.run("""
+                UNWIND $frontier AS cid
+                MATCH (a:Article {id: cid})-[:SIMILAR]-(b:Article)
+                RETURN DISTINCT a.id AS src, b.id AS dst
+                ORDER BY src, dst LIMIT $lim
+            """, frontier=frontier, lim=MAX_SIMULATION_EDGES + 1)
+            rows = await result.data()
+            if len(rows) > MAX_SIMULATION_EDGES:
+                truncated = True
+            frontier = []
+            for row in rows[:MAX_SIMULATION_EDGES]:
+                a, b = str(row["src"]), str(row["dst"])
+                key = (min(a, b), max(a, b))
+                if key in unique_edges or key[0] == key[1]:
+                    continue
+                new_ids = set(key) - seen_nodes
+                if len(seen_nodes) + len(new_ids) > MAX_SIMULATION_NODES:
+                    truncated = True
+                    continue
+                if len(unique_edges) == MAX_SIMULATION_EDGES:
+                    truncated = True
+                    break
+                unique_edges.add(key)
+                for cid in sorted(new_ids):
+                    seen_nodes.add(cid)
+                    frontier.append(cid)
+            if len(unique_edges) == MAX_SIMULATION_EDGES or len(seen_nodes) == MAX_SIMULATION_NODES:
+                truncated = True
+                break
+        return [{"src": a, "dst": b} for a, b in sorted(unique_edges)], hub_rows[0], truncated
 
     async with driver.session() as ses:
-        edges, hub_node = await ses.execute_read(_run)
-
+        edges, hub_node, truncated = await ses.execute_read(_run)
     adjacency: dict[str, list[str]] = {}
-    for e in edges:
-        adjacency.setdefault(e["src"], []).append(e["dst"])
-        adjacency.setdefault(e["dst"], []).append(e["src"])
-
+    for edge in edges:
+        adjacency.setdefault(edge["src"], []).append(edge["dst"])
+        adjacency.setdefault(edge["dst"], []).append(edge["src"])
     if hub not in adjacency:
         raise HTTPException(status_code=404, detail="hub article not in the link graph")
-
-    title = domain = None
-    if hub_node is not None:
-        title = _clean_text(hub_node.get("title"), 140)
-        domain = _clean_text(hub_node.get("domain"), 80)
-
     return {
-        "hub": {"id": hub, "title": title, "domain": domain},
+        "hub": {"id": hub, "title": _clean_text(hub_node.get("title"), 140),
+                "domain": _clean_text(hub_node.get("domain"), 80)},
         **simulate_cascade(adjacency, hub, p=p, max_depth=max_depth),
+        "graph_scope": "bounded_hub_neighborhood",
+        "truncated": truncated, "observed_propagation": False,
+        "limits": {"nodes": MAX_SIMULATION_NODES, "edges": MAX_SIMULATION_EDGES,
+                   "depth": MAX_SIMULATION_DEPTH},
     }

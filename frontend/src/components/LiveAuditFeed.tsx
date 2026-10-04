@@ -2,6 +2,9 @@ import React from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Radio, ExternalLink } from 'lucide-react';
 import { corpusApi } from '../api/corpus';
+import { usePollingPolicy } from '../lib/polling';
+import { safeHttpUrl } from '../lib/urls';
+import { QueryError } from './QueryError';
 
 /**
  * LiveAuditFeed — the REAL ingest stream: newest collected articles from
@@ -9,10 +12,11 @@ import { corpusApi } from '../api/corpus';
  */
 
 export const LiveAuditFeed: React.FC = () => {
+  const polling = usePollingPolicy(20000);
   const recent = useQuery({
     queryKey: ['ingest-stream'],
-    queryFn: () => corpusApi.recent(14),
-    refetchInterval: 20000,
+    queryFn: ({ signal }) => corpusApi.recent(14, { signal }),
+    ...polling,
   });
 
   return (
@@ -46,14 +50,15 @@ export const LiveAuditFeed: React.FC = () => {
             <div key={i} className="shimmer h-7 mb-1" />
           ))}
 
-          {recent.isError && (
-            <div className="text-hermes-red-bright p-2">stream unavailable</div>
-          )}
+          {recent.isLoading && <p role="status" className="text-xs">Loading collected articles…</p>}
+          {recent.isError && <QueryError title="Stream unavailable" error={recent.error} onRetry={() => recent.refetch()} retrying={recent.isFetching} />}
+          {recent.isError && recent.data && <p className="text-xs text-amber-300">Last real ingest data may be stale.</p>}
+          {recent.isSuccess && recent.data.items.length === 0 && <p className="text-xs text-hermes-bone/55">No collected articles returned.</p>}
 
           {recent.data?.items.map((r, index) => (
             <a
               key={r.id}
-              href={r.url}
+              href={safeHttpUrl(r.url)}
               target="_blank"
               rel="noreferrer"
               className={`group flex items-start gap-3 px-1.5 py-1.5 hover:bg-hermes-panel transition-colors border-l-2 border-l-transparent ${

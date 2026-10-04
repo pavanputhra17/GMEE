@@ -2,6 +2,12 @@
 
 Global Misinformation Evolution Engine — system design and data flow.
 
+**Interpretation boundary:** typed changes are observable text differences, graph
+lineage is inferred, and local-corpus support is not a probability of truth.
+Research comparisons are **UNPERFORMED**. Deployment hardening is not a
+production-readiness or causal-propagation claim. See [Audit](docs/AUDIT.md),
+[Operations](docs/OPERATIONS.md) and [Research](docs/RESEARCH.md).
+
 ## 30-second overview
 
 ```
@@ -35,9 +41,13 @@ also be triggered manually via authenticated `POST …/trigger` endpoints.
 
 - `rss.py`, `reddit.py`, `news_api.py` fetch raw items into `articles`.
 - Each collector subclasses `base.py`; missing API keys disable a source.
-- A Redis **leader lock** (`core/leader_lock.py`) guarantees a single runner
-  when multiple backend replicas are up: `SET NX EX` with TTL = 75 % of the
-  interval, released only by the owner.
+- Redis leader election coordinates scheduled work; a finite TTL by itself
+  does not guarantee single execution when a job outlives its lease or a worker
+  crashes. The main upgrade adds durable PostgreSQL ownership/job records
+  (`gmee03`); lease renewal, stale-owner fencing and recovery require isolated
+  concurrency tests before high-availability claims.
+- Infrastructure starts with `ENABLE_SCHEDULER=false`. Operators enable actual
+  collection explicitly after migration/readiness and provider-policy review.
 
 ### 2. Preprocessing (`services/preprocessing/`)
 
@@ -61,11 +71,14 @@ One cycle (`run_evolution_cycle`) with guards first:
    the last `ClaimClusterRun` (bypassable with `force=true`).
 3. **Clustering** — `cluster_service.py` (BERTopic) assigns claims to topics,
    persisted as `ClaimClusterAssignment` rows under a `ClaimClusterRun`.
-4. **Mutation detection** — `mutation_detector.py` compares each claim's
-   embedding against earlier-cluster predecessors:
-   - cosine ≥ `EVOLUTION_SIMILARITY_THRESHOLD` → best predecessor gets an
-     `EVOLVED_FROM` edge (one per claim — the mutation chain),
-   - similarity in `[SIMILAR_TO_THRESHOLD, EVOLUTION_…)` → `SIMILAR_TO`.
+4. **Mutation detection** — vector proximity retrieves candidates; typed text
+   analysis checks numeric/entity/hedging/polarity/framing/wording changes with
+   changed spans and method/temporal metadata. A eligible earlier different-article
+   predecessor with meaningful change may receive an `EVOLVED_FROM` candidate
+   edge; similarity alone is not propagation or mutation proof. One parent per
+   child is enforced by `gmee01`, which fails on historical multi-parent conflicts
+   rather than deleting history. `SIMILAR_TO` remains a similarity relationship.
+   Stored/returned analysis explicitly disclaims observed propagation.
 5. **Durable commit** to Postgres, then **Neo4j sync** (`neo4j_writer.py`)
    mirrors claims/articles/sources and relationship edges; a sync failure is
    logged but does not fail the cycle.
@@ -74,15 +87,15 @@ One cycle (`run_evolution_cycle`) with guards first:
 
 | Store | Role |
 |-------|------|
-| PostgreSQL + pgvector | System of record: users/sessions, sources, articles, claims (+ embedding vector), entity mentions, cluster runs & assignments, claim relationships, audit log. HNSW index on `claims.embedding`. |
-| Neo4j | Read-optimized propagation graph: `(Claim)-[:EVOLVED_FROM|SIMILAR_TO]->(Claim)` plus source/actor nodes for path queries the dashboard visualizes. |
+| PostgreSQL + pgvector | System of record: users/sessions, sources, articles, claims (+ 768-d embedding), entities, cluster runs, typed claim relationships, audit/feedback, label origins/history and frozen split/event identity; durable pipeline ownership/jobs in the main upgrade. HNSW on `claims.embedding`. |
+| Neo4j | Read-optimized graph projection of candidate lineage/similarity plus source/entity nodes. An `EVOLVED_FROM` edge is inferred text/temporal association, not observed copying. Sync can lag the authoritative PostgreSQL transaction. |
 | Redis | JWT blocklist, sliding-window rate-limit counters, scheduler leader lock, hot caches. |
 
 ## API surface
 
 FastAPI app factory in `app/main.py`; all routers under `/api/v1`
-(`health`, `dashboard`, `auth`, `collection`, `preprocessing`, `nlp`,
-`evolution`). Full reference: [`docs/API.md`](docs/API.md); machine spec:
+(`health`, `dashboard`, `auth`, pipeline controls, `corpus`, `verdicts`, `graph`,
+`alerts`, `eval`, and admin operations in the main upgrade). Full reference: [`docs/API.md`](docs/API.md); machine spec:
 [`docs/openapi.json`](docs/openapi.json).
 
 Cross-cutting hardening lives in `app/core/ops_security.py`:
@@ -95,7 +108,23 @@ Cross-cutting hardening lives in `app/core/ops_security.py`:
 - `record_audit()` writes best-effort audit rows (register/login events).
 
 Auth = JWT access+refresh (`core/security.py`), role-gated dependencies
-(`api/deps.py` — admin-only for trigger endpoints).
+(`api/deps.py` — admin-only triggers, research export and durable operations).
+Public registration creates a normal user, not an admin. `/verdicts/check` and
+`/graph/mutation/compare` require a current user. Evaluation next/label/progress
+are authenticated; the server sets annotator identity, preserves revisions and
+separates human/automatic/legacy/test origins (`gmee02`).
+
+## Feature rationales and epistemic contracts
+
+| Feature | Why it exists | Boundary |
+|---------|---------------|----------|
+| Collection + preprocessing | Retain attributable source/time/content while normalizing markup and duplicates | Coverage is incomplete; feed access does not grant redistribution rights |
+| Semantic corpus search | Retrieve a bounded local candidate set for inspection | Raw cosine is relatedness, not calibrated probability |
+| Authenticated corpus checking | Return traceable article/claim citations and passage stance, with explicit insufficient evidence | No web fetch/independent fact verification; syndication and model warnings disclosed |
+| Typed mutation comparison | Explain concrete changes and spans without inventing lineage | Read-only comparison; chronology and textual change are not causal proof |
+| Blinded Eval Lab | Collect server-attributed human judgments separately from weak diagnostics | Human independence, event curation and legal dataset freeze still need review |
+| Durable jobs/metrics/recovery | Make ownership and interrupted work inspectable | Admin-only; leases/recovery must be concurrency-tested, not assumed exactly-once |
+| Demo telemetry | Show an explicitly simulated UI when chosen/available | Never scientific evidence or a successful readiness check |
 
 ## Frontend
 
@@ -113,16 +142,54 @@ React 18 + Vite + Tailwind, single-page dashboard (`src/pages/SystemHealth.tsx`)
 
 ## Environments & config
 
-All configuration flows through pydantic `Settings` (`core/config.py`) loaded
-from `.env` (see `.env.example`). Required: `POSTGRES_URL`, `NEO4J_URI`,
-`NEO4J_USER`, `NEO4J_PASSWORD`, `REDIS_URL`, `CORS_ORIGINS`,
-`JWT_SECRET` (≥32 chars). Optional ingestion keys: Reddit, NewsAPI, Anthropic.
+Application configuration uses pydantic `Settings` (`core/config.py`). Runtime
+Compose explicitly requires a private root `.env`, with the non-secret template
+at `infra/runtime.env.example`. It supplies private datastore URLs and requires
+unique PostgreSQL/Neo4j credentials and JWT secret (≥32 chars); optional ingestion
+keys are Reddit, NewsAPI and Anthropic. Host-local URLs differ from service-name
+URLs inside containers. Never log resolved Compose configuration or secret files.
+
+Production CMD runs migrations before Uvicorn and defaults to **one worker**;
+main application startup owns lazy model loading. Production source is immutable,
+model cache is writable by the non-root user, and datastores/API have no host
+ports. The development override exposes only loopback. PostgreSQL/Neo4j/Redis
+share an internal datastore network; nginx reaches only the backend proxy network.
+
+nginx replaces forwarding headers and denies framing, permits current Google
+Fonts and self-origin `/api` in CSP, hides server version and bounds body/API
+waits. Uvicorn trusts the known nginx peer only; raw app XFF trust defaults off
+in the main upgrade. An external TLS gateway/provider chain needs an explicit
+trusted-address/scheme review; no wildcard trust is required or allowed here.
+Render's static frontend uses a separately declared HTTPS API origin in CSP/CORS.
+
+## Performance and failure behavior
+
+- One worker avoids duplicate per-process ML weights; lazy loading reduces boot
+  work but shifts model download/load latency to first use. Measure cold/warm RAM,
+  latency and provider/model availability before selecting a deployment tier.
+- Bounded retrieval/graph limits and persisted typed edges avoid presenting an
+  unbounded cross-join as an interactive operation. Request budgets are not a
+  benchmark or a promised p95; long pipelines belong in inspectable jobs.
+- PostgreSQL is authoritative; Neo4j synchronization can fail/lag and needs
+  observable recovery. Redis loss affects revocation, limiting and coordination;
+  its behavior must be validated rather than advertised as fail-safe.
+- Empty corpus is a valid state. Missing evidence/models/dependencies must be
+  exposed as abstention/unavailability, never silently simulated scientific data.
+- Capacity/load, high-availability failure and restore experiments are
+  **UNPERFORMED** for this upgrade. See [Limitations](docs/LIMITATIONS.md).
 
 ## Testing strategy
 
-- Backend: pytest + asyncio against SQLite (JSONB/pgvector compilers
-  registered in `tests/conftest.py`); pipelines tested with mocked DB sessions
-  and mocked Neo4j writers; coverage gate 70 %. Integration against real
-  Postgres/Neo4j happens via Docker Compose.
-- Frontend: Vitest + Testing Library — MetricCard contract, demo-mode
-  activation, App smoke. Strict lint (`--max-warnings 0`) gates CI.
+- Backend: pytest + asyncio unit tests with SQLite dialect shims/mocks (70%
+  coverage gate). Required CI integration migrates a disposable PostgreSQL+
+  pgvector service and rejects empty/skipped JUnit results. SQLite cannot prove
+  vector SQL/index, migration or durable ownership semantics.
+- Frontend: locked `npm ci`, strict ESLint/types/build and Vitest/Testing Library
+  with component coverage. Docker tests use a Node target, never nginx runtime.
+- Deployment: static secret-free Compose/policy validation and PowerShell parsing;
+  offline backup/HTTP safety tests; bounded tmpfs-only real HTTP smoke through
+  production nginx/API images. It checks auth/readiness/empty corpus/evidence
+  gate/typed comparison but writes no scientific labels and is not browser E2E.
+- Release gates still include native nginx/Render validation, browser interaction
+  and accessibility, isolated restore, measured capacity and the frozen human
+  research protocol. See [Acceptance checklist](docs/AUDIT.md).

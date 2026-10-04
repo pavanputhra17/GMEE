@@ -1,6 +1,8 @@
 import React from 'react';
 import { ExternalLink } from 'lucide-react';
 import type { TimelineCluster } from '../api/timeline';
+import { safeHttpUrl } from '../lib/urls';
+import { Dialog } from './Dialog';
 
 /**
  * ClusterDossier — the inspector modal behind the timeline tunnel.
@@ -63,22 +65,17 @@ export const ClusterDossier: React.FC<{
   const hubAt = cluster.published_at ? Date.parse(cluster.published_at) : null;
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4"
-      onClick={onClose}
+    <Dialog labelledBy="cluster-dossier-title" onClose={onClose}
+      className="max-w-xl w-full border border-hermes-bone/25 bg-hermes-panel shadow-[6px_6px_0_0_rgba(0,0,0,0.65)] flex flex-col max-h-[85vh] text-hermes-bone"
     >
-      <div
-        className="max-w-xl w-full border border-hermes-bone/25 bg-hermes-panel shadow-[6px_6px_0_0_rgba(0,0,0,0.65)] flex flex-col max-h-[85vh]"
-        onClick={(ev) => ev.stopPropagation()}
-      >
         {/* brutalist accent strip */}
         <div className="h-1 bg-hermes-red shrink-0" />
 
         <div className="p-6 flex flex-col gap-4 overflow-y-auto scroll-contained">
           <div className="flex items-start justify-between gap-4 pb-3 border-b border-hermes-bone/15">
-            <div className="font-mono text-[10px] uppercase tracking-widest text-hermes-bone/45">
+            <h2 id="cluster-dossier-title" className="font-mono text-[10px] uppercase tracking-widest text-hermes-bone/45">
               Cluster dossier · {cluster.members.length + 1} articles
-            </div>
+            </h2>
             <button
               onClick={onClose}
               aria-label="Close dossier"
@@ -95,7 +92,7 @@ export const ClusterDossier: React.FC<{
                 className="w-2.5 h-2.5 rounded-full shrink-0 mt-2"
                 style={{ background: colorFor(cluster.domain) }}
               />
-              <a href={cluster.url ?? '#'} target="_blank" rel="noreferrer" className="group min-w-0">
+              <a href={safeHttpUrl(cluster.url)} target="_blank" rel="noreferrer" className="group min-w-0">
                 <h3 className="font-display text-lg leading-snug text-white group-hover:text-hermes-red-bright transition-colors">
                   {cluster.title}
                 </h3>
@@ -118,11 +115,12 @@ export const ClusterDossier: React.FC<{
             </div>
             {first !== null && last !== null && (
               <div className="font-mono text-[10px] text-hermes-bone/40 mt-1.5">
-                first reported {fmtDate(new Date(first).toISOString())} · coverage span{' '}
+                first reported in this cluster {fmtDate(new Date(first).toISOString())} · coverage span{' '}
                 {fmtDur(last - first)}
               </div>
             )}
           </div>
+          <p className="text-xs font-mono text-hermes-bone/55">Similarity meters are uncalibrated matching signals, not factual confidence or observed propagation.</p>
           {/* members */}
           <div className="space-y-1.5">
             {cluster.members.map((m) => {
@@ -131,7 +129,7 @@ export const ClusterDossier: React.FC<{
               return (
                 <a
                   key={m.id}
-                  href={m.url ?? '#'}
+                  href={safeHttpUrl(m.url)}
                   target="_blank"
                   rel="noreferrer"
                   className="group flex items-center gap-3 border border-hermes-bone/10 bg-hermes-panel-deep px-3 py-2 hover:border-hermes-bone/30 transition-colors"
@@ -171,6 +169,16 @@ export const ClusterDossier: React.FC<{
             })}
           </div>
 
+          {/* LLM Mutation Summary */}
+          {cluster.members.length > 0 && (
+            <div className="border border-emerald-500/20 bg-emerald-500/5 p-4 rounded-sm mt-2 mb-2">
+              <div className="flex items-center justify-between mb-2">
+                <span className="font-mono text-[10px] uppercase tracking-widest text-emerald-400/80">LLM Generative Mutation Summary</span>
+              </div>
+              <MutationSummaryViewer articleIds={[cluster.id, ...cluster.members.map(m => m.id)]} />
+            </div>
+          )}
+
           {/* footer stats */}
           <div className="flex items-center gap-2 flex-wrap pt-3 border-t border-hermes-bone/10">
             {hi !== null && (
@@ -187,7 +195,36 @@ export const ClusterDossier: React.FC<{
             <Chip>{cluster.deg} similarity links</Chip>
           </div>
         </div>
-      </div>
-    </div>
+    </Dialog>
   );
+};
+
+const MutationSummaryViewer: React.FC<{ articleIds: string[] }> = ({ articleIds }) => {
+  const [summary, setSummary] = React.useState<string | null>(null);
+  const [loading, setLoading] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    let active = true;
+    const fetchSummary = async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        const { timelineApi } = await import('../api/timeline');
+        const res = await timelineApi.mutationSummary(articleIds);
+        if (active) setSummary(res.summary);
+      } catch (err: any) {
+        if (active) setError(err.message || 'Failed to fetch summary');
+      } finally {
+        if (active) setLoading(false);
+      }
+    };
+    fetchSummary();
+    return () => { active = false; };
+  }, [articleIds]);
+
+  if (loading) return <p className="text-xs font-mono text-emerald-300/60 animate-pulse">Analyzing temporal claim mutations via LLM...</p>;
+  if (error) return <p className="text-xs font-mono text-hermes-red-bright">{error}</p>;
+  if (summary) return <p className="text-sm text-emerald-100/90 leading-relaxed">{summary}</p>;
+  return null;
 };

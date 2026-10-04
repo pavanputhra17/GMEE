@@ -1,8 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { apiClient } from '../api/client';
+import { fetchHealth } from '../api/health';
+import { useDashboardTab } from '../lib/routes';
+import { useDocumentVisible, usePollingControl, usePollingPolicy } from '../lib/polling';
+import { PollingProvider } from '../components/PollingProvider';
+import { QueryError } from '../components/QueryError';
 import { fetchDashboard } from '../api/dashboard';
-import { Header, TabType } from '../components/Header';
+import { Header } from '../components/Header';
 import { MetricCard } from '../components/MetricCard';
 import { GraphVisualizer } from '../components/GraphVisualizer';
 import { VectorTelemetry } from '../components/VectorTelemetry';
@@ -20,29 +24,13 @@ import {
   Database,
   Network,
   HardDrive,
-  AlertCircle,
   ShieldCheck,
   FlaskConical,
   X,
-  RefreshCw,
   Play
 } from 'lucide-react';
 
-interface HealthStatus {
-  postgres?: string;
-  neo4j?: string;
-  redis?: string;
-  status: string;
-}
 
-const fetchHealth = async (): Promise<HealthStatus> => {
-  try {
-    return await apiClient.get('/health/ready');
-  } catch (error: unknown) {
-    if (error instanceof Error) throw new Error(error.message);
-    throw new Error(String(error));
-  }
-};
 /* ------------------------------ Demo telemetry ----------------------------- */
 
 interface DemoTelemetry {
@@ -111,57 +99,31 @@ const LoadingGrid: React.FC = () => (
 
 /* --------------------------------- Component -------------------------------- */
 
-export const SystemHealth: React.FC = () => {
-  const [refetchInterval, setRefetchInterval] = useState<number>(5000);
-  const [activeTab, setActiveTab] = useState<TabType>(() => {
-    const m = window.location.hash.match(/^#\/dashboard\/([a-z]+)$/);
-    const valid: TabType[] = ['overview', 'factcheck', 'fullgraph', 'timeline', 'masala', 'graph', 'vector', 'cache', 'corpus', 'eval'];
-    return (m && valid.includes(m[1] as TabType) ? m[1] : 'overview') as TabType;
-  });
-
-  // keep URL hash in sync so tabs are deep-linkable
-  useEffect(() => {
-    if (window.location.hash !== `#/dashboard/${activeTab}`) {
-      window.history.replaceState(null, '', `#/dashboard/${activeTab}`);
-    }
-  }, [activeTab]);
-  // Tracks whether the backend has EVER responded this session — once true,
-  // a later network failure shows the error state instead of flipping to demo.
-  const [everConnected, setEverConnected] = useState<boolean>(false);
-  // null = automatic (demo whenever backend is unreachable); true/false = user override
-  const [demoOverride, setDemoOverride] = useState<boolean | null>(null);
+const SystemHealthContent: React.FC = () => {
+  const { interval: refetchInterval, setInterval: setRefetchInterval } = usePollingControl();
+  const polling = usePollingPolicy(0);
+  const visible = useDocumentVisible();
+  const [activeTab, setActiveTab] = useDashboardTab();
+  const [demoMode, setDemoMode] = useState(false);
   const [telemetry, setTelemetry] = useState<DemoTelemetry>(DEMO_BASE);
 
-  // Derived BEFORE the query so options never reference their own result.
-  const demoMode = demoOverride === true || (demoOverride === null && !everConnected);
-
-  const { data, error, isLoading, isFetching, refetch } = useQuery<HealthStatus>({
+  const { data, error, isLoading, isFetching, refetch } = useQuery({
     queryKey: ['health'],
-    queryFn: fetchHealth,
-    retry: false,
-    // While in demo mode the backend is (by definition) unreachable — stop
-    // hammering it. Polling only runs once we've seen a live backend and the
-    // user hasn't paused.
-    refetchInterval: everConnected && refetchInterval > 0 ? refetchInterval : false,
+    queryFn: ({ signal }) => fetchHealth({ signal }),
+    ...polling,
   });
 
-  // Live corpus/graph/cache metrics — only polled once a backend is known good.
-  const { data: dash } = useQuery({
+  // Each dependency reports independently; readiness never gates usable tabs.
+  const dashboard = useQuery({
     queryKey: ['dashboard'],
-    queryFn: fetchDashboard,
-    enabled: everConnected,
-    retry: false,
-    refetchInterval: everConnected && refetchInterval > 0 ? refetchInterval : false,
+    queryFn: ({ signal }) => fetchDashboard({ signal }),
+    ...polling,
   });
-
-  // Latch connectivity the first time the backend answers.
-  useEffect(() => {
-    if (data) setEverConnected(true);
-  }, [data]);
+  const dash = dashboard.data;
 
   // Slowly drift the simulated metrics so the dashboard feels alive
   useEffect(() => {
-    if (!demoMode) return;
+    if (!demoMode || refetchInterval === 0 || !visible || !['overview', 'cache'].includes(activeTab)) return;
     const id = setInterval(() => {
       setTelemetry(prev => ({
         claimsIndexed: prev.claimsIndexed + Math.floor(Math.random() * 3),
@@ -176,30 +138,15 @@ export const SystemHealth: React.FC = () => {
       }));
     }, 5000); // gentle drift every 5s — calm, not twitchy
     return () => clearInterval(id);
-  }, [demoMode]);
+  }, [demoMode, refetchInterval, visible, activeTab]);
 
-  const isPostgresOk = demoMode || data?.postgres === 'ok';
-  const isNeo4jOk = demoMode || data?.neo4j === 'ok';
-  const isRedisOk = demoMode || data?.redis === 'ok';
-  const isAllOk = demoMode || data?.status === 'ok';
-
-  // If the backend comes back while the user is in an explicit demo session,
-  // hand control back to live data automatically.
-  useEffect(() => {
-    if (data && demoOverride === true) setDemoOverride(null);
-  }, [data, demoOverride]);
-
-  const realStatus: 'ok' | 'degraded' | 'error' = error
-    ? 'error'
-    : isAllOk
-    ? 'ok'
-    : 'degraded';
-
-  const headerStatus = demoMode ? ('ok' as const) : realStatus;
-
-  // Honest rollup: share of infra services currently reporting OK.
+  const isPostgresOk = data?.postgres === 'ok';
+  const isNeo4jOk = data?.neo4j === 'ok';
+  const isRedisOk = data?.redis === 'ok';
+  const isAllOk = data?.status === 'ready';
+  const headerStatus = error ? 'error' : data?.status ?? 'connecting';
   const servicesUp = [isPostgresOk, isNeo4jOk, isRedisOk].filter(Boolean).length;
-  const healthScore = Math.round((servicesUp / 3) * 100);
+  const count = (value: number | undefined) => value === undefined ? 'unavailable' : value.toLocaleString();
 
   return (
     <div className="min-h-screen flex flex-col items-center p-4 pb-0 md:p-8 md:pb-0 lg:p-12 lg:pb-0 relative bg-hermes-ink text-hermes-bone overflow-x-clip">
@@ -214,14 +161,14 @@ export const SystemHealth: React.FC = () => {
           refetchInterval={refetchInterval}
           setRefetchInterval={setRefetchInterval}
           isFetching={isFetching}
-          onManualRefresh={() => refetch()}
+          onManualRefresh={() => { void refetch(); void dashboard.refetch(); }}
           status={headerStatus}
           demoMode={demoMode}
         />
 
-        {/* Telemetry equalizer — the engine's pulse */}
+        {/* Decorative equalizer, never presented as measured telemetry. */}
         <div className="mt-6 mb-8 border border-hermes-bone/15 bg-hermes-panel px-4 py-3">
-          <AsciiEqualizer count={56} className="text-lg" />
+          <AsciiEqualizer count={56} className="text-lg" label="Decorative equalizer — not live telemetry" />
         </div>
 
         {/* DEMO MODE banner */}
@@ -236,57 +183,44 @@ export const SystemHealth: React.FC = () => {
                   Demo Telemetry — simulated data stream
                 </div>
                 <div className="text-[11px] font-mono text-hermes-bone/85 truncate">
-                  GMEE backend unreachable at http://localhost:8000 · showing synthetic infrastructure metrics
+                  Opt-in infrastructure simulator only · all corpus, graph and feature requests still use real API data
                 </div>
               </div>
             </div>
             <button
-              onClick={() => setDemoOverride(false)}
+              onClick={() => setDemoMode(false)}
               className="btn-ghost-brutal shrink-0 !py-1.5 !px-3"
-              title="Hide simulated data and show the connection error"
+              title="Hide simulated data and return to real metrics"
             >
               <X className="w-3.5 h-3.5" /> Exit Demo
             </button>
           </div>
         )}
 
-        {/* Loading View */}
-        {isLoading && !demoMode ? (
-          <LoadingGrid />
-        ) : error && !demoMode ? (
-          /* Error State View */
-          <div className="card-brutal-dark p-10 flex flex-col items-center text-center">
-            <div className="w-16 h-16 flex items-center justify-center mb-4 border border-hermes-bone/25 bg-hermes-panel-deep shadow-[3px_3px_0_0_rgba(0,0,0,0.55)]">
-              <AlertCircle className="w-8 h-8 text-hermes-red" />
-            </div>
-            <h2 className="text-3xl font-display mb-2">
-              Backend Connection Severed
-            </h2>
-            <p className="text-hermes-bone/65 max-w-lg text-sm mb-6 font-mono">
-              Unable to establish a connection with the GMEE FastAPI backend server. Ensure Docker Compose containers are active.
+        <section aria-label="Dependency readiness" className="mb-6 card-brutal-dark p-4 space-y-3">
+          {isLoading && <p role="status" className="font-mono text-xs">Connecting to backend readiness… Tabs can fetch independently.</p>}
+          {error && <QueryError title="Readiness unavailable" error={error} onRetry={refetch} retrying={isFetching} />}
+          {data && <>
+            <p className="font-mono text-xs text-hermes-bone/65">
+              {error ? 'Last reported readiness' : 'Readiness'}: {data.status}.
+              {data.status === 'not_ready' && ' A dependency is unavailable; usable tabs remain open.'}
             </p>
-            <div className="bg-hermes-panel-deep border border-hermes-red-bright/30 text-hermes-red-bright font-mono text-xs p-3 max-w-md w-full mb-6 break-all">
-              {(error as Error).message}
-            </div>
-            <div className="flex flex-wrap items-center justify-center gap-3">
-              <button
-                onClick={() => refetch()}
-                disabled={isFetching}
-                className="btn-brutal"
-              >
-                <RefreshCw className={`w-3.5 h-3.5 ${isFetching ? 'animate-spin' : ''}`} />
-                Re-try Telemetry Handshake
-              </button>
-              <button
-                onClick={() => setDemoOverride(true)}
-                className="btn-ghost-brutal"
-              >
-                <Play className="w-3.5 h-3.5" />
-                Launch Demo Telemetry
-              </button>
-            </div>
-          </div>
-        ) : (
+            <dl className="grid grid-cols-1 sm:grid-cols-3 gap-3 font-mono text-xs">
+              {(['postgres', 'neo4j', 'redis'] as const).map((service) => <div key={service}>
+                <dt className="uppercase text-hermes-bone/50">{service}</dt>
+                <dd className="break-words">{data[service] ?? 'not reported'}</dd>
+              </div>)}
+            </dl>
+          </>}
+          {!demoMode && <button type="button" onClick={() => setDemoMode(true)} className="btn-brutal">
+            <Play className="w-3.5 h-3.5" /> Launch Demo Telemetry
+          </button>}
+        </section>
+        {dashboard.isError && <div className="mb-6"><QueryError title="Dashboard metrics unavailable" error={dashboard.error} onRetry={() => dashboard.refetch()} retrying={dashboard.isFetching} />
+          {dash && <p className="font-mono text-xs mt-2">Showing the last real snapshot from {dash.generated_at}; values may be stale.</p>}
+        </div>}
+
+        {activeTab === 'overview' && isLoading && dashboard.isLoading && !demoMode ? <LoadingGrid /> : (
           /* Active Content Views Based on Tab */
           <div className="space-y-8">
             {activeTab === 'overview' && (
@@ -295,50 +229,44 @@ export const SystemHealth: React.FC = () => {
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5">
                   <MetricCard
                     title="PostgreSQL Vector"
-                    value={isPostgresOk ? (dash ? `${(dash.claims_total ?? 0).toLocaleString()} claims` : "Nominal") : "Degraded"}
-                    subtitle={
-                      dash
-                        ? `${(dash.embedded_claims ?? 0).toLocaleString()} embedded · ${(dash.entities_total ?? 0).toLocaleString()} entities`
-                        : "Relational DB & pgvector"
-                    }
+                    value={demoMode ? `${telemetry.claimsIndexed.toLocaleString()} simulated claims` : dash?.claims_total !== undefined ? `${count(dash.claims_total)} claims` : isPostgresOk ? 'Ready · counts unavailable' : data ? 'Unavailable' : 'Unknown'}
+                    subtitle={demoMode ? 'Simulated preview — not corpus data' : `${count(dash?.embedded_claims)} embedded · ${count(dash?.entities_total)} entities`} 
                     icon={Database}
                     accentColor={isPostgresOk ? "violet" : "rose"}
-                    trend={isPostgresOk ? "PORT 55432" : "DOWN"}
+                    trend={isPostgresOk ? 'READY' : data?.postgres === undefined ? 'UNKNOWN' : 'NOT READY'}
                     trendPositive={isPostgresOk}
                   />
                   <MetricCard
                     title="Neo4j Graph Engine"
-                    value={isNeo4jOk ? "Connected" : "Degraded"}
-                    subtitle={
-                      dash?.graph
+                    value={demoMode ? 'Simulated graph' : isNeo4jOk ? 'Ready' : data ? 'Unavailable' : 'Unknown'}
+                    subtitle={demoMode
+                      ? `${telemetry.graphNodes.toLocaleString()} simulated nodes · ${telemetry.graphEdges.toLocaleString()} simulated edges`
+                      : dash?.graph?.available
                         ? `${Object.values(dash.graph.nodes).reduce((a, b) => a + b, 0).toLocaleString()} nodes · ${dash.graph.relationships.toLocaleString()} edges`
-                        : `${telemetry.graphNodes.toLocaleString()} nodes · ${telemetry.graphEdges.toLocaleString()} edges`
-                    }
+                        : 'Topology counts unavailable'}
                     icon={Network}
                     accentColor={isNeo4jOk ? "cyan" : "rose"}
-                    trend={isNeo4jOk ? "BOLT 7687" : "DOWN"}
+                    trend={isNeo4jOk ? 'READY' : data?.neo4j === undefined ? 'UNKNOWN' : 'NOT READY'}
                     trendPositive={isNeo4jOk}
                   />
                   <MetricCard
                     title="Redis Cache & Queue"
-                    value={isRedisOk ? (dash?.cache ? dash.cache.used_memory_human : "Active") : "Degraded"}
-                    subtitle={
-                      dash?.cache
-                        ? `In-memory store · ${dash.cache.used_memory_mb} MB allocated`
-                        : `Queue depth ${telemetry.queueDepth.toLocaleString()} jobs`
-                    }
+                    value={demoMode ? 'Simulated cache' : dash?.cache?.available ? dash.cache.used_memory_human : isRedisOk ? 'Ready · metrics unavailable' : data ? 'Unavailable' : 'Unknown'}
+                    subtitle={demoMode
+                      ? `Simulated queue depth ${telemetry.queueDepth.toLocaleString()} jobs`
+                      : dash?.cache?.available ? `In-memory store · ${dash.cache.used_memory_mb} MB allocated` : 'Queue depth and memory not reported'}
                     icon={HardDrive}
                     accentColor={isRedisOk ? "amber" : "rose"}
-                    trend={isRedisOk ? "PORT 6379" : "DOWN"}
+                    trend={isRedisOk ? 'READY' : data?.redis === undefined ? 'UNKNOWN' : 'NOT READY'}
                     trendPositive={isRedisOk}
                   />
                   <MetricCard
-                    title="System Health Score"
-                    value={`${healthScore}%`}
-                    subtitle="Infra services reporting nominal"
+                    title="Infrastructure Readiness"
+                    value={data ? `${servicesUp} / 3 ready` : 'Unknown'}
+                    subtitle="Real dependency readiness · not a quality score"
                     icon={ShieldCheck}
                     accentColor={isAllOk ? "emerald" : "amber"}
-                    trend={isAllOk ? "HEALTHY" : "CHECK"}
+                    trend={isAllOk ? 'READY' : data ? 'NOT READY' : 'CONNECTING'}
                     trendPositive={isAllOk}
                   />
                 </div>
@@ -380,10 +308,11 @@ export const SystemHealth: React.FC = () => {
 
             {activeTab === 'cache' && (
               <CacheTelemetry
-                hitRatio={demoMode ? `${telemetry.hitRatio.toFixed(1)}%` : '98.4%'}
-                latencyMs={demoMode ? `${telemetry.latencyMs.toFixed(1)}ms` : '0.2ms'}
-                revokedTokens={`${telemetry.revokedTokens.toLocaleString()} tokens`}
-                memoryMb={demoMode ? `${telemetry.memoryMb.toFixed(1)} MB` : '128.4 MB'}
+                hitRatio={demoMode ? `${telemetry.hitRatio.toFixed(1)}%` : undefined}
+                latencyMs={demoMode ? `${telemetry.latencyMs.toFixed(1)}ms` : undefined}
+                revokedTokens={demoMode ? `${telemetry.revokedTokens.toLocaleString()} simulated tokens` : undefined}
+                memoryMb={demoMode ? `${telemetry.memoryMb.toFixed(1)} MB` : dash?.cache?.available ? `${dash.cache.used_memory_mb} MB` : undefined}
+                simulated={demoMode}
               />
             )}
           </div>
@@ -392,3 +321,5 @@ export const SystemHealth: React.FC = () => {
     </div>
   );
 };
+
+export const SystemHealth: React.FC = () => <PollingProvider><SystemHealthContent /></PollingProvider>;

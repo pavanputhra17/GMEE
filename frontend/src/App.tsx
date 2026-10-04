@@ -17,7 +17,11 @@ function App() {
   useEffect(() => {
     const onHash = () => setRoute(currentRoute());
     window.addEventListener('hashchange', onHash);
-    return () => window.removeEventListener('hashchange', onHash);
+    window.addEventListener('popstate', onHash);
+    return () => {
+      window.removeEventListener('hashchange', onHash);
+      window.removeEventListener('popstate', onHash);
+    };
   }, []);
 
   return (

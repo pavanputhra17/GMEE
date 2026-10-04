@@ -1,75 +1,46 @@
-import { apiClient } from './client';
+import { apiClient, type ApiRequestOptions } from './client';
 
 export type EvalLabel = 'SAME_STORY' | 'EVOLVED' | 'DISTINCT';
+export type EvalStrategy = 'coverage' | 'uncertainty';
+export type EvalSplit = 'unassigned' | 'train' | 'dev' | 'test';
 
-export interface EvalClaimSide {
-  text: string;
-  domain: string;
-}
-
-export interface EvalPair {
-  pair_id: string;
-  a: EvalClaimSide;
-  b: EvalClaimSide;
-}
-
-export interface EvalNext {
-  done: boolean;
-  pair: EvalPair | null;
-}
-
-export interface EvalBucketProgress {
-  bucket: string;
-  pairs: number;
-  labeled: number;
-}
-
+export interface EvalClaimSide { text: string; domain: string | null }
+export interface EvalPair { pair_id: string; a: EvalClaimSide; b: EvalClaimSide }
+export interface EvalNext { done: boolean; pair: EvalPair | null }
+export interface EvalBucketProgress { bucket: string; pairs: number; labeled: number; consensus?: number }
+export interface EvalOriginProgress { votes: number; pairs: number; labels?: Record<string, number> }
 export interface EvalProgress {
   total_pairs: number;
   labeled_votes: number;
   labeled_pairs_distinct: number;
   by_bucket: EvalBucketProgress[];
   per_annotator: Record<string, { labels: Record<string, number>; total: number }>;
-  inter_annotator: Array<{ annotators: string[]; pairs: number; kappa: number }>;
+  inter_annotator: Array<{
+    annotators: string[]; pairs: number; kappa: number | null;
+    raw_agreement?: number; origin?: string; warning?: string;
+  }>;
   complete: boolean;
+  origins?: Record<string, EvalOriginProgress>;
+  human_votes?: number;
+  consensus_pairs?: number;
+  disagreement_pairs?: number;
+  invalid_human_votes?: number;
+  by_split?: Array<{ split: EvalSplit; pairs: number; labeled: number; consensus?: number }>;
+  warning?: string;
+  warnings?: string[];
 }
-
+export interface EvalAnnotation { mutation_types?: string[]; notes?: string }
 export interface EvalLabelResult {
-  status: string;
-  pair_id: string;
-  label: string;
+  status: string; pair_id: string; label: string;
+  annotator?: string; origin?: string; mutation_types?: string[] | null; notes?: string | null;
 }
-
-const ANNOTATOR_KEY = 'gmee-eval-annotator';
 
 export const evalApi = {
-  annotatorKey: ANNOTATOR_KEY,
-
-  loadAnnotator: (): string => {
-    try {
-      return window.localStorage.getItem(ANNOTATOR_KEY) ?? '';
-    } catch {
-      return '';
-    }
-  },
-
-  saveAnnotator: (name: string): void => {
-    try {
-      window.localStorage.setItem(ANNOTATOR_KEY, name);
-    } catch {
-      /* storage unavailable (private mode) — annotator just won't persist */
-    }
-  },
-
-  next: (annotator: string) =>
-    apiClient.get(`/eval/next?annotator=${encodeURIComponent(annotator)}`) as Promise<EvalNext>,
-
-  label: (pairId: string, annotator: string, label: EvalLabel) =>
-    apiClient.post('/eval/label', {
-      pair_id: pairId,
-      annotator,
-      label,
-    }) as Promise<EvalLabelResult>,
-
-  progress: () => apiClient.get('/eval/progress') as Promise<EvalProgress>,
+  next: (strategy: EvalStrategy, split: EvalSplit = 'unassigned', options?: ApiRequestOptions) =>
+    apiClient.get<EvalNext>(`/eval/next?${new URLSearchParams({ strategy, split })}`, { ...options, authenticated: true }),
+  label: (pairId: string, label: EvalLabel, annotation: EvalAnnotation = {}) =>
+    apiClient.post<EvalLabelResult>('/eval/label', { pair_id: pairId, label, ...annotation }, { authenticated: true }),
+  progress: (options?: ApiRequestOptions) => apiClient.get<EvalProgress>('/eval/progress', { ...options, authenticated: true }),
+  export: (datasetVersion: string, publication = false) =>
+    apiClient.download(`/eval/export?${new URLSearchParams({ dataset_version: datasetVersion, publication: String(publication) })}`, { authenticated: true, timeoutMs: 45_000 }),
 };

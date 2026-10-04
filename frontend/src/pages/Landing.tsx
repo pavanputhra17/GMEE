@@ -15,6 +15,8 @@ import { AsciiGlobe } from '../components/AsciiGlobe';
 import { AsciiTicker } from '../components/AsciiTicker';
 import { AsciiReveal } from '../components/AsciiReveal';
 import { LiveAuditFeed } from '../components/LiveAuditFeed';
+import { QueryError } from '../components/QueryError';
+import { usePollingPolicy } from '../lib/polling';
 
 /**
  * GMEE landing page — editorial-brutalist poster in the red-immersion palette.
@@ -25,18 +27,13 @@ import { LiveAuditFeed } from '../components/LiveAuditFeed';
 
 /* -------------------------------- data -------------------------------- */
 
-const DEFAULT_HERO_STATS = [
-  { k: '10,000+', label: 'claims indexed' },
-  { k: '27,132', label: 'graph nodes' },
-  { k: '80,107', label: 'propagation edges' },
-  { k: '3 / 3', label: 'live services' },
-];
+const HERO_LABELS = ['claims indexed', 'graph nodes', 'graph relationships', 'ready services'];
 
 const TICKER_ITEMS = [
   'CLAIM MUTATIONS TRACED IN REAL TIME',
   'PGVECTOR · HNSW · 768-D EMBEDDINGS',
   'NEO4J PROPAGATION TOPOLOGY',
-  'APPEND-ONLY AUDIT STREAM',
+  'SOURCE-ATTRIBUTED INGEST STREAM',
   'REDIS-METERED INGEST QUEUE',
 ];
 
@@ -44,20 +41,20 @@ const CAPABILITIES = [
   {
     icon: Database,
     title: 'Semantic Vector Search',
-    body: 'Every claim embedded with all-mpnet-base-v2 into pgvector. Nearest-neighbor cosine search surfaces mutating variants of a narrative across millions of documents.',
+    body: 'Search available article embeddings with pgvector. Nearest-neighbor cosine similarity surfaces related corpus coverage; similarity alone does not prove shared facts.',
     meta: 'PGVECTOR · HNSW · 768-D',
   },
   {
     icon: Network,
     title: 'Propagation Graph Engine',
-    body: 'Claims, actors, sources, and botnets mapped as a living Neo4j topology. Watch a narrative jump clusters and identify coordinated amplification.',
+    body: 'Explore linked articles and claim relationships. Similarity and mutation edges help compare coverage; they do not establish causal propagation or coordinated amplification.',
     meta: 'NEO4J · BOLT · CYPHER',
   },
   {
     icon: Terminal,
     title: 'Live Audit Stream',
-    body: 'Every index write, sync batch, and pipeline verification streams into a tamper-evident telemetry feed. The engine shows its work.',
-    meta: 'REAL-TIME · APPEND-ONLY',
+    body: 'Inspect the newest collected articles, with source attribution and collection times from the corpus API.',
+    meta: 'API SNAPSHOTS · SOURCE LINKS',
   },
   {
     icon: HardDrive,
@@ -86,50 +83,25 @@ const STEPS = [
 ];
 
 export const Landing: React.FC = () => {
-  const { data: snapshot } = useQuery({
-    queryKey: ['landing-dashboard-summary'],
-    queryFn: fetchDashboard,
-    refetchInterval: 30_000,
+  const polling = usePollingPolicy(30_000);
+  const dashboard = useQuery({
+    queryKey: ['dashboard'],
+    queryFn: ({ signal }) => fetchDashboard({ signal }),
+    ...polling,
     staleTime: 15_000,
   });
+  const snapshot = dashboard.data;
 
   const heroStats = useMemo(() => {
-    if (!snapshot) return DEFAULT_HERO_STATS;
-
-    const claimsCount = snapshot.claims_total ?? snapshot.embedded_claims;
-    const claimsFormatted =
-      typeof claimsCount === 'number' && claimsCount > 0
-        ? claimsCount.toLocaleString()
-        : DEFAULT_HERO_STATS[0].k;
-
-    const graphNodesCount = snapshot.graph?.nodes
-      ? Object.values(snapshot.graph.nodes).reduce((acc, curr) => acc + curr, 0)
-      : null;
-    const graphNodesFormatted =
-      typeof graphNodesCount === 'number' && graphNodesCount > 0
-        ? graphNodesCount.toLocaleString()
-        : DEFAULT_HERO_STATS[1].k;
-
-    const edgesCount = snapshot.graph?.relationships;
-    const edgesFormatted =
-      typeof edgesCount === 'number' && edgesCount > 0
-        ? edgesCount.toLocaleString()
-        : DEFAULT_HERO_STATS[2].k;
-
-    const services = snapshot.services;
-    const liveCount = services
-      ? [services.postgres, services.neo4j, services.redis].filter(
-          (s) => s === 'ok'
-        ).length
-      : 3;
-    const servicesFormatted = `${liveCount} / 3`;
-
-    return [
-      { k: claimsFormatted, label: 'claims indexed' },
-      { k: graphNodesFormatted, label: 'graph nodes' },
-      { k: edgesFormatted, label: 'propagation edges' },
-      { k: servicesFormatted, label: 'live services' },
+    const format = (value: number | undefined) => value === undefined ? '—' : value.toLocaleString();
+    const graph = snapshot?.graph?.available ? snapshot.graph : null;
+    const values = [
+      format(snapshot?.claims_total),
+      format(graph ? Object.values(graph.nodes).reduce((sum, value) => sum + value, 0) : undefined),
+      format(graph?.relationships),
+      snapshot?.services ? `${Object.values(snapshot.services).filter((status) => status === 'ok').length} / 3` : '—',
     ];
+    return HERO_LABELS.map((label, index) => ({ k: values[index], label }));
   }, [snapshot]);
 
   return (
@@ -191,7 +163,7 @@ export const Landing: React.FC = () => {
           <div className="relative w-full max-w-[520px] aspect-square mx-auto">
             <AsciiGlobe className="absolute inset-0" />
             <span className="absolute top-2 right-2 font-mono text-[10px] tracking-widest text-hermes-red-bright/80 uppercase">
-              ◉ live projection · ascii raster
+              ◉ decorative globe · ascii raster
             </span>
             <span className="absolute bottom-2 left-2 font-mono text-[10px] tracking-widest text-hermes-bone/40 uppercase">
               rev 48s · scan 14s
@@ -199,6 +171,10 @@ export const Landing: React.FC = () => {
           </div>
         </div>
 
+        {dashboard.isLoading && <p role="status" className="max-w-7xl mx-auto px-4 md:px-8 pb-4 font-mono text-xs">Connecting to real dashboard metrics…</p>}
+        {dashboard.isError && <div className="max-w-7xl mx-auto px-4 md:px-8 pb-4"><QueryError title="Dashboard metrics unavailable" error={dashboard.error} onRetry={() => dashboard.refetch()} retrying={dashboard.isFetching} />
+          {snapshot && <p className="font-mono text-xs mt-2">Last real snapshot: {snapshot.generated_at}. Values may be stale.</p>}
+        </div>}
         {/* Stats strip */}
         <div className="border-t border-hermes-bone/15">
           <div className="max-w-7xl mx-auto px-4 md:px-8 py-4 grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -297,19 +273,19 @@ export const Landing: React.FC = () => {
                   The engine shows its work.
                 </h2>
                 <p className="text-sm font-mono leading-relaxed text-hermes-ink/70">
-                  Nothing hides inside GMEE. Index writes, graph syncs, and
-                  pipeline verifications land in an append-only stream — the
-                  same feed operators watch in the command center.
+                  The ingest stream shows real collected articles and their
+                  sources — the same corpus feed operators inspect in the
+                  command center. An unavailable service stays visibly unavailable.
                 </p>
                 <div className="flex flex-wrap gap-2 pt-1">
                   <span className="chip-brutal bg-hermes-ink text-hermes-bone border-hermes-ink/90">
-                    Append-only
+                    Real corpus
                   </span>
                   <span className="chip-brutal border-hermes-ink/60 text-hermes-ink/70">
-                    9s cadence
+                    API snapshots
                   </span>
                   <span className="chip-brutal border-hermes-ink/60 text-hermes-ink/70">
-                    Tamper-evident
+                    Source attribution
                   </span>
                 </div>
               </div>
@@ -328,7 +304,7 @@ export const Landing: React.FC = () => {
             </h2>
             <p className="font-mono text-xs text-hermes-bone/75 flex items-center gap-2">
               <ShieldCheck className="w-3.5 h-3.5" />
-              Live telemetry · simulated fallback when the backend sleeps
+              Real telemetry · optional labelled infrastructure demo
             </p>
           </div>
           <a

@@ -1,230 +1,314 @@
-# mypy: disallow-untyped-defs=False, disallow-incomplete-defs=False, disallow-any-generics=False
+"""Persist evidence-gated, uncalibrated verdict scores for corpus claims.
 
-"""Batch verdict runner — scores every claim in the corpus.
+Usage: python scripts/run_verdicts.py [limit] [--rescore] [--outlet-priors FILE]
 
-For each claim:
-  1. pull its embedding + entities + source outlet
-  2. find near-neighbor claims via pgvector (cross-outlet)
-  3. NLI-check the closest few for entailment/contradiction stance
-  4. combine five signals -> P(supported), band, rationale, evidence
-  5. persist to claims.verdict_*
-
-Usage: python scripts/run_verdicts.py [limit] [--rescore]
-
-By default only unscored claims (verdict IS NULL) are picked up. Pass
---rescore to re-run the engine over already-verdicted claims as well —
-required after engine changes, or existing bands would never be recomputed
-(e.g. the degenerate 62%-UNSUPPORTED distribution predates the current
-contradiction/corroboration logic).
+Only unscored records are updated by default, including at write time.
+--rescore is an explicit opt-in to overwriting stored verdicts; nothing is
+rescored automatically after an engine change. There is one scoring pass,
+with neutral outlet priors unless separately supplied independent counts and
+provenance are disclosed. The engine's own verdicts are never reliability data.
 """
 
+from __future__ import annotations
+
+import argparse
 import asyncio
 import json
 import sys
+from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from sqlalchemy import bindparam, text
+from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.postgres import async_session_maker
 from app.services.verdict.engine import (
-    DISPUTED_BANDS,
-    SUPPORTED_BANDS,
+    METHOD_VERSION,
+    SCORE_KIND,
+    NLIUnavailableError,
     VerdictEngine,
+    canonical_domain,
     near_window,
-    nli_stance,
+)
+from app.services.verdict.evidence import (
+    CORPUS_WARNING,
+    MAX_CANDIDATES,
+    ClaimCheckResult,
+    EmbeddingUnavailableError,
+    EvidenceCandidate,
+    check_claim_with_embedding,
 )
 
+OutletPriors = dict[str, dict[str, Any]]
+EVIDENCE_LIMIT = 6
 
-async def load_claims(limit: int, rescore: bool = False):
-    # `rescore` is a script-local flag (not user input), so the conditional
-    # predicate below is a fixed literal either way.
+
+async def load_claims(limit: int, rescore: bool = False) -> list[dict[str, Any]]:
     predicate = "TRUE" if rescore else "c.verdict IS NULL"
     async with async_session_maker() as db:
         rows = (
-            await db.execute(
-                text(
-                    f"""
-                    SELECT c.id::text AS id, c.claim_text, c.embedding,
-                           a.domain AS outlet,
-                           COALESCE(
-                               (SELECT json_agg(json_build_object(
-                                   'entity_type', ce.entity_type))
-                                FROM claim_entities ce WHERE ce.claim_id = c.id),
-                               '[]'::json) AS entities
-                    FROM claims c
-                    JOIN articles a ON a.id = c.article_id
-                    WHERE {predicate}
-                    ORDER BY c.confidence DESC NULLS LAST
-                    LIMIT :lim
-                    """
-                ),
-                {"lim": limit},
-            )
-        ).all()
-        return [dict(r._mapping) for r in rows]
-
-
-async def neighbors_for(db, claim_id: str, emb) -> list[dict]:
-    if emb is None:
-        return []
-    res = await db.execute(
-        text(
-            """
-            SELECT c.id::text AS id, c.claim_text, a.domain AS domain,
-                   c.embedding <=> :emb AS dist
+            (
+                await db.execute(
+                    text(f"""
+            SELECT c.id::text AS id, c.article_id::text AS article_id,
+                   c.claim_text, c.embedding, c.extracted_at,
+                   a.domain AS outlet, a.published_at, a.collected_at,
+                   a.canonical_article_id::text AS canonical_article_id,
+                   a.content_hash,
+                   COALESCE(
+                       (SELECT json_agg(json_build_object('entity_type', ce.entity_type))
+                        FROM claim_entities ce WHERE ce.claim_id = c.id),
+                       '[]'::json) AS entities
             FROM claims c JOIN articles a ON a.id = c.article_id
-            WHERE c.id <> CAST(:cid AS uuid) AND c.embedding IS NOT NULL
-            ORDER BY c.embedding <=> :emb
-            LIMIT 12
-            """
-        ),
-        {"emb": emb, "cid": claim_id},
-    )
-    return [dict(r._mapping) for r in res.all()]
+            WHERE {predicate}
+            ORDER BY c.confidence DESC NULLS LAST, c.id
+            LIMIT :lim
+        """),
+                    {"lim": limit},
+                )
+            )
+            .mappings()
+            .all()
+        )
+    return [dict(row) for row in rows]
 
 
-async def outlet_track_records() -> dict[str, dict]:
-    """Historical support/dispute counts per outlet from already-verdicted claims.
+def load_outlet_priors(path: Path | None = None) -> OutletPriors:
+    """Load caller-attested independent counts; no query of engine-labeled history.
 
-    The band vocabulary comes from the engine itself (SUPPORTED_BANDS /
-    DISPUTED_BANDS) — the previous hard-coded names ('LEAN_SUPPORTED',
-    'LEAN_DISPUTED') no longer existed, so every outlet silently scored 0/0
-    and the track-record signal never left its Laplace prior.
+    Format: {domain: {supported: int, disputed: int,
+                      independently_validated: true, provenance: string}}.
+    GMEE cannot audit the supplier's independence assertion.
     """
-    stmt = (
-        text(
-            """
-            SELECT a.domain AS outlet,
-                   COUNT(*) FILTER (WHERE c.verdict IN :supported) AS supported,
-                   COUNT(*) FILTER (WHERE c.verdict IN :disputed) AS disputed
-            FROM claims c JOIN articles a ON a.id = c.article_id
-            WHERE c.verdict IS NOT NULL
-            GROUP BY a.domain
-            """
-        )
-        .bindparams(
-            bindparam("supported", expanding=True),
-            bindparam("disputed", expanding=True),
-        )
-    )
-    async with async_session_maker() as db:
-        rows = (
-            await db.execute(
-                stmt,
-                {
-                    "supported": list(SUPPORTED_BANDS),
-                    "disputed": list(DISPUTED_BANDS),
-                },
+    if path is None:
+        return {}
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError("Outlet priors must be a JSON object keyed by domain")
+    priors: OutletPriors = {}
+    for domain, stats in data.items():
+        normalized = canonical_domain(domain) if isinstance(domain, str) else None
+        if not normalized or normalized in priors or not isinstance(stats, dict):
+            raise ValueError(
+                "Outlet priors require distinct normalized domains and objects"
             )
-        ).all()
-    return {r[0]: {"supported": r[1], "disputed": r[2]} for r in rows}
+        provenance = stats.get("provenance")
+        if (
+            stats.get("independently_validated") is not True
+            or not isinstance(provenance, str)
+            or not provenance.strip()
+            or any(
+                type(stats.get(k)) is not int or stats[k] < 0
+                for k in ("supported", "disputed")
+            )
+        ):
+            raise ValueError(
+                "Each outlet prior needs nonnegative integer supported/disputed "
+                "counts, independently_validated=true and nonempty provenance; "
+                "engine verdict history is not acceptable independent data"
+            )
+        priors[normalized] = dict(stats)
+    return priors
 
 
-async def score_claim(db, claim: dict, track: dict) -> dict | None:
-    emb = claim["embedding"]
-    nbrs = await neighbors_for(db, claim["id"], emb)
+def _json_default(value: object) -> str:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    raise TypeError(f"Unsupported evidence value: {type(value).__name__}")
 
-    lo, hi = near_window()
-    near = [n for n in nbrs if lo <= (1 - float(n["dist"])) <= hi]
 
-    # NLI stance on up to 3 nearest cross-outlet neighbors
-    checked = []
-    own_domain = claim["outlet"]
-    for nb in near[:3]:
-        if nb["domain"] == own_domain:
-            continue
-        stance = await nli_stance(claim["claim_text"], nb["claim_text"])
-        checked.append({**nb, "sim": round(1 - float(nb["dist"]), 3), "nli": stance})
-
-    # neighbors without explicit NLI stance count as neutral proximity;
-    # NLI-checked ones carry their stance. Every entry carries its similarity so
-    # the corroboration signal can credit near-identical paraphrases even when
-    # the NLI model abstains (see VERDICT_STRONG_SIMILARITY).
-    pool = [
-        {**n, "sim": round(1 - float(n["dist"]), 3),
-         "nli": next((c["nli"] for c in checked if c["id"] == n["id"]), None)}
-        for n in near
-    ] or checked
-    corr_sig, contra_sig = VerdictEngine.corroboration_signal(pool, own_domain)
-    lang_sig = VerdictEngine.linguistic_signal(claim["claim_text"])
-    ent_sig = VerdictEngine.entity_signal(claim["entities"] or [])
-    track_sig = VerdictEngine.track_record_signal(track.get(own_domain))
-
-    result = VerdictEngine.combine([corr_sig, contra_sig, track_sig, ent_sig, lang_sig])
-
-    # enrich evidence with the NLI-checked neighbor list
-    result.evidence["checked_neighbors"] = [
-        {
-            "domain": n["domain"],
-            "similarity": n["sim"],
-            "stance": n["nli"],
-            "claim": n["claim_text"][:200],
+async def score_claim(
+    db: AsyncSession,
+    claim: Mapping[str, Any],
+    track: Mapping[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    observed = datetime.now(UTC)
+    own_domain = canonical_domain(claim.get("outlet"))
+    origin = EvidenceCandidate(
+        claim_id=str(claim["id"]),
+        article_id=str(claim["article_id"]),
+        text=str(claim["claim_text"]),
+        url="",
+        title="",
+        domain=own_domain,
+        published_at=None,
+        similarity=1.0,
+        canonical_article_id=claim.get("canonical_article_id"),
+        content_hash=claim.get("content_hash"),
+    )
+    check: ClaimCheckResult
+    if claim.get("embedding") is None:
+        check = {
+            "claim_text": origin.text,
+            "assessment": "INSUFFICIENT_EVIDENCE",
+            "evidence": [],
+            "warnings": [
+                CORPUS_WARNING,
+                "No stored claim embedding; retrieval abstained.",
+            ],
+            "score_kind": SCORE_KIND,
+            "observed_at": observed,
+            "method_version": METHOD_VERSION,
         }
-        for n in checked
-    ]
+    else:
+        check = await check_claim_with_embedding(
+            db,
+            origin.text,
+            claim["embedding"],
+            limit=EVIDENCE_LIMIT,
+            observed_at=observed,
+            exclude_claim_id=origin.claim_id,
+            own_domain=own_domain,
+            own_origin=origin,
+        )
+    pool = [dict(item) for item in check["evidence"]]
+    corr_sig, contra_sig = VerdictEngine.corroboration_signal(pool, own_domain)
+    lang_sig = VerdictEngine.linguistic_signal(origin.text)
+    entities = claim.get("entities") or []
+    if isinstance(entities, str):
+        entities = json.loads(entities)
+    ent_sig = VerdictEngine.entity_signal(entities)
+    track_sig = VerdictEngine.track_record_signal((track or {}).get(own_domain or ""))
+    result = VerdictEngine.combine([corr_sig, contra_sig, track_sig, ent_sig, lang_sig])
+    result.evidence.update(
+        {
+            "checked_neighbors": check["evidence"],
+            "corpus_assessment": check["assessment"],
+            "observed_at": check["observed_at"],
+            "coverage": CORPUS_WARNING,
+            "source_prior_disclosure": track_sig.detail["disclosure"],
+            "retrieval": {
+                "max_candidates": MAX_CANDIDATES,
+                "evidence_limit": EVIDENCE_LIMIT,
+                "min_similarity": near_window()[0],
+                "similarity_role": "retrieval_only",
+            },
+            "warnings": list(
+                dict.fromkeys([*result.evidence["warnings"], *check["warnings"]])
+            ),
+        }
+    )
     return {
         "probability": result.probability,
         "band": result.band,
         "rationale": result.rationale,
-        "evidence": json.dumps(result.evidence),
+        "evidence": json.dumps(result.evidence, default=_json_default),
+        "score_kind": SCORE_KIND,
+        "method_version": METHOD_VERSION,
     }
 
 
-async def persist(db, claim_id: str, v: dict) -> None:
-    await db.execute(
-        text(
-            """
-            UPDATE claims SET verdict = CAST(:band AS text),
-                              verdict_probability = :p,
-                              verdict_rationale = :r,
-                              verdict_evidence = CAST(:e AS jsonb)
-            WHERE id = CAST(:cid AS uuid)
-            """
-        ),
-        {"band": v["band"], "p": v["probability"], "r": v["rationale"], "e": v["evidence"], "cid": claim_id},
+async def persist(
+    db: AsyncSession,
+    claim_id: str,
+    verdict: Mapping[str, Any],
+    *,
+    rescore: bool = False,
+) -> bool:
+    guard = "" if rescore else "AND verdict IS NULL"
+    result = await db.execute(
+        text(f"""
+        UPDATE claims SET verdict = CAST(:band AS text),
+                          verdict_probability = :score,
+                          verdict_rationale = :rationale,
+                          verdict_evidence = CAST(:evidence AS jsonb)
+        WHERE id = CAST(:claim_id AS uuid) {guard}
+        RETURNING id
+    """),
+        {
+            "band": verdict["band"],
+            "score": verdict["probability"],
+            "rationale": verdict["rationale"],
+            "evidence": verdict["evidence"],
+            "claim_id": claim_id,
+        },
     )
+    return result.scalar_one_or_none() is not None
 
 
-async def main() -> None:
-    argv = sys.argv[1:]
-    rescore = "--rescore" in argv
-    positional = [a for a in argv if a != "--rescore"]
-    limit = int(positional[0]) if positional else 100
+def _positive_limit(value: str) -> int:
+    try:
+        limit = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("limit must be a positive integer") from exc
+    if limit < 1:
+        raise argparse.ArgumentTypeError("limit must be a positive integer")
+    return limit
 
-    claims = await load_claims(limit, rescore=rescore)
-    mode = "claims (rescore mode)" if rescore else "unscored claims"
-    print(f"scoring {len(claims)} {mode} …")
 
+def argument_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("limit", nargs="?", type=_positive_limit, default=100)
+    parser.add_argument(
+        "--rescore", action="store_true", help="Explicitly overwrite stored verdicts"
+    )
+    parser.add_argument(
+        "--outlet-priors",
+        type=Path,
+        help="Independent counts/provenance JSON; default neutral",
+    )
+    return parser
+
+
+async def main(argv: Sequence[str] | None = None) -> None:
+    parser = argument_parser()
+    args = parser.parse_args(argv)
+    try:
+        priors = load_outlet_priors(args.outlet_priors)
+    except (OSError, ValueError) as exc:
+        parser.error(str(exc))
+    claims = await load_claims(args.limit, rescore=args.rescore)
+    mode = "explicit rescore mode" if args.rescore else "unscored claims only"
+    print(f"Scoring {len(claims)} claims ({mode}); scores are uncalibrated heuristics.")
+    print(
+        "Source priors: "
+        + (
+            "caller-supplied independent counts; provenance is disclosed, not audited."
+            if priors
+            else "neutral; no independent outlet data supplied."
+        )
+    )
     done = 0
-    # two passes: first pass seeds track records with initial scoring,
-    # second pass refines using those priors.
-    for pass_no in (1, 2):
-        track = await outlet_track_records()
-        async with async_session_maker() as db:
-            for i, claim in enumerate(claims):
-                v = await score_claim(db, claim, track)
-                if v is None:
-                    continue
-                await persist(db, claim["id"], v)
-                done += 1
-                if done % 10 == 0:
+    async with async_session_maker() as db:
+        try:
+            for claim in claims:
+                verdict = await score_claim(db, claim, priors)
+                if await persist(db, str(claim["id"]), verdict, rescore=args.rescore):
+                    done += 1
+                if done and done % 10 == 0:
                     await db.commit()
-                    print(f"  pass {pass_no}: {done} scored", flush=True)
+                    print(f"  {done} scored", flush=True)
             await db.commit()
-
-    # final distribution
+        except (EmbeddingUnavailableError, NLIUnavailableError) as exc:
+            await db.rollback()
+            print(
+                f"Scoring stopped; pending writes rolled back. {exc}", file=sys.stderr
+            )
+            raise SystemExit(1) from exc
+        except SQLAlchemyError as exc:
+            await db.rollback()
+            print(
+                "Verdict storage failed; pending writes rolled back. Check PostgreSQL/pgvector.",
+                file=sys.stderr,
+            )
+            raise SystemExit(1) from exc
     async with async_session_maker() as db:
         rows = (
             await db.execute(
-                text("SELECT verdict, COUNT(*) FROM claims GROUP BY verdict ORDER BY 2 DESC")
+                text(
+                    "SELECT verdict, COUNT(*) FROM claims GROUP BY verdict ORDER BY 2 DESC"
+                )
             )
         ).all()
-    print("\n=== VERDICT DISTRIBUTION ===")
-    for r in rows:
-        print(f"  {r[0]}: {r[1]}")
-    print(f"\ntotal scored this run: {done}")
+    print("\n=== STORED VERDICT DISTRIBUTION (MAY INCLUDE LEGACY SCORES) ===")
+    for row in rows:
+        print(f"  {row[0]}: {row[1]}")
+    print(f"\nTotal newly persisted this run: {done}")
 
 
 if __name__ == "__main__":

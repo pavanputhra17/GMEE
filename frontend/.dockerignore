@@ -1,8 +1,11 @@
-# Build context hygiene: keep host state out of the image.
+# Host dependencies, built artifacts and runtime secret files are not build inputs.
 node_modules
 dist
 coverage
 *.log
 .vite
+*.tsbuildinfo
 .env
-.env.local
+.env.*
+.git
+# Tests remain available to the Node test target, not the nginx runtime stage.

@@ -1,12 +1,15 @@
-import { apiClient } from './client';
+import { apiClient, type ApiRequestOptions } from './client';
 
 export interface GraphNode {
   id: string;
   title: string;
   domain: string | null;
-  url: string | null;
+  url?: string | null;
+  article_id?: string | null;
   published_at?: string | null;
-  deg: number;
+  deg?: number;
+  verdict?: string;
+  prob?: number | null;
 }
 
 export interface GraphEdge {
@@ -30,6 +33,6 @@ export interface ClaimGraphNode {
 }
 
 export const graphApi = {
-  full: () => apiClient.get('/graph/full') as Promise<FullGraph>,
-  claims: () => apiClient.get('/graph/claims') as Promise<FullGraph & { nodes: ClaimGraphNode[] }>,
+  full: (options?: ApiRequestOptions) => apiClient.get<FullGraph>('/graph/full', options),
+  claims: (options?: ApiRequestOptions) => apiClient.get<FullGraph>('/graph/claims', options),
 };

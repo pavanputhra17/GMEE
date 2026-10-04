@@ -1,13 +1,24 @@
-# Build context hygiene: keep host state out of the image (.venv alone would
-# be hundreds of MB and would shadow site-packages in the COPY layer).
+# Keep host state, secrets, backup artifacts and generated reports out of images.
 .venv
 venv
 __pycache__
-*.pyc
+*.py[cod]
 .pytest_cache
 .ruff_cache
 .mypy_cache
+.coverage*
+coverage.xml
+htmlcov
+*.egg-info
 *.log
 .env
+.env.*
+*.dump
+*.sql
+*.sql.gz
+*.zip
+_backup
+.git
 eval_report.json
-tests
+eval_publication_report.md
+# tests must remain available to the dedicated Dockerfile test target.

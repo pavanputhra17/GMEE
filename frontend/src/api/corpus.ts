@@ -1,4 +1,4 @@
-import { apiClient } from './client';
+import { apiClient, type ApiRequestOptions } from './client';
 
 export interface CorpusArticle {
   id: string;
@@ -68,29 +68,23 @@ export interface SearchResult {
 }
 
 export const corpusApi = {
-  stats: () => apiClient.get('/corpus/stats') as Promise<CorpusStats>,
+  stats: (options?: ApiRequestOptions) => apiClient.get<CorpusStats>('/corpus/stats', options),
 
-  search: (q: string, limit = 10) =>
-    apiClient.get(
-      `/corpus/search?q=${encodeURIComponent(q)}&limit=${limit}`
-    ) as Promise<SearchResult>,
+  search: (q: string, limit = 10, options?: ApiRequestOptions) =>
+    apiClient.get<SearchResult>(`/corpus/search?q=${encodeURIComponent(q)}&limit=${limit}`, { timeoutMs: 45_000, ...options }),
 
-  list: (params: { q?: string; domain?: string; limit?: number; offset?: number }) => {
+  list: (params: { q?: string; domain?: string; limit?: number; offset?: number }, options?: ApiRequestOptions) => {
     const sp = new URLSearchParams();
     if (params.q) sp.set('q', params.q);
     if (params.domain) sp.set('domain', params.domain);
     sp.set('limit', String(params.limit ?? 30));
     sp.set('offset', String(params.offset ?? 0));
-    return apiClient.get(`/corpus/articles?${sp.toString()}`) as Promise<CorpusListResponse>;
+    return apiClient.get<CorpusListResponse>(`/corpus/articles?${sp.toString()}`, options);
   },
 
-  recent: (limit = 12) =>
-    apiClient.get(`/corpus/articles/recent?limit=${limit}`) as Promise<{
-      items: RecentArticle[];
-    }>,
+  recent: (limit = 12, options?: ApiRequestOptions) =>
+    apiClient.get<{ items: RecentArticle[] }>(`/corpus/articles/recent?limit=${limit}`, options),
 
-  storyClusters: (minLinks = 3, limit = 6) =>
-    apiClient.get(
-      `/corpus/graph/story-clusters?min_links=${minLinks}&limit=${limit}`
-    ) as Promise<{ clusters: StoryCluster[] }>,
+  storyClusters: (minLinks = 3, limit = 6, options?: ApiRequestOptions) =>
+    apiClient.get<{ clusters: StoryCluster[] }>(`/corpus/graph/story-clusters?min_links=${minLinks}&limit=${limit}`, options),
 };

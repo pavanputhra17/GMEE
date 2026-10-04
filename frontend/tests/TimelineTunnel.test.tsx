@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach, afterEach, beforeAll } from 'vitest';
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, cleanup } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import TimelineTunnel from '../src/components/TimelineTunnel';
@@ -18,11 +18,6 @@ const timelineMock = vi.mocked(timelineApi.clusters);
 const selMock = vi.mocked(useSelectedArticle);
 const clearMock = vi.mocked(clearSelectedArticle);
 
-// jsdom has no canvas 2D context — return null quietly (the tunnel's render
-// loop guards on it). Spying also silences jsdom's "not implemented" noise.
-beforeAll(() => {
-  vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
-});
 
 const FOCUS = { id: '11111111-1111-1111-1111-111111111111', title: 'Border Raid Focused Story', domain: 'www.thehindu.com' };
 
@@ -71,10 +66,10 @@ describe('<TimelineTunnel/> — graph → focused story drill-down', () => {
   it('with a selected story, fetches ONLY that story (article_id) and shows the focus chip', async () => {
     selMock.mockReturnValue(FOCUS);
     renderTunnel();
-    expect(timelineMock).toHaveBeenCalledWith(60, FOCUS.id);
+    expect(timelineMock).toHaveBeenCalledWith(60, FOCUS.id, expect.objectContaining({ signal: expect.any(AbortSignal) }));
     expect(await screen.findByText(/Border Raid Focused Story/)).toBeTruthy();
     expect(screen.getByText('All stories')).toBeTruthy();
-    expect(screen.getByText(/ends at the original first report/i)).toBeTruthy();
+    expect(screen.getByText(/ends at the earliest linked coverage returned/i)).toBeTruthy();
   });
 
   it("All stories clears the selection and returns to the generic tunnel", async () => {
@@ -87,7 +82,7 @@ describe('<TimelineTunnel/> — graph → focused story drill-down', () => {
   it('without a selection, fetches the global timeline with no article_id filter', async () => {
     selMock.mockReturnValue(null);
     renderTunnel();
-    expect(timelineMock).toHaveBeenCalledWith(60, undefined);
+    expect(timelineMock).toHaveBeenCalledWith(60, undefined, expect.objectContaining({ signal: expect.any(AbortSignal) }));
     await screen.findByText(/3 clusters · newest on top/i);
     expect(screen.queryByText('All stories')).toBeNull();
   });

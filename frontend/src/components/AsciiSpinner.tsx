@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { useAnimationActivity } from '../lib/useAnimationActivity';
 
 /**
  * AsciiSpinner — classic line spinner (| / - \) as a React component.
@@ -28,11 +29,10 @@ export const AsciiSpinner: React.FC<AsciiSpinnerProps> = ({
 }) => {
   const hostRef = useRef<HTMLSpanElement>(null);
   const [frameIdx, setFrameIdx] = useState(0);
+  const { animate } = useAnimationActivity(hostRef);
 
   useEffect(() => {
-    const reduced =
-      typeof window.matchMedia === 'function' &&
-      window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const reduced = !animate;
     if (reduced) return; // keep the static first frame
 
     let raf = 0;
@@ -78,7 +78,7 @@ export const AsciiSpinner: React.FC<AsciiSpinnerProps> = ({
       cancelAnimationFrame(raf);
       document.removeEventListener('visibilitychange', onVis);
     };
-  }, [advanceMs]);
+  }, [advanceMs, animate]);
 
   void hostRef;
   void label;

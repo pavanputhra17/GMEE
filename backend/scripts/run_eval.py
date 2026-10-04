@@ -1,26 +1,19 @@
 # mypy: disallow-untyped-defs=False, disallow-incomplete-defs=False, disallow-any-generics=False
 
-"""Gold-standard evaluation runner.
+"""Exploratory live-corpus diagnostics, not held-out publication evaluation.
 
-Scores the human-labeled eval_pairs against two retrieval baselines:
+Only unanimous votes from >=2 authenticated humans enter the primary report.
+Weak origins are reported separately, never upgraded to human gold. TF-IDF
+fits this diagnostic sample and best-F1 uses this same sample, so both are
+explicitly exploratory. Cosine/TF-IDF are scores, not probabilities; there
+are no Brier/ECE claims for them and no sample-size validity assurances.
 
-  * sbert — cosine similarity of the production embeddings (all-mpnet-base-v2,
-    the same vectors the clustering engine uses)
-  * tfidf — character+word TF-IDF cosine (scikit-learn), the classic cheap
-    baseline any published system must beat
-
-and reports, per method: AUROC with a bootstrap CI, best-F1 (threshold swept),
-F1 at the engine's operating point (0.60), Brier score and expected calibration
-error. Pairwise McNemar tests say whether the differences are significant, and
-the report shouts when the sample is too small to mean anything (it usually is,
-until hundreds of pairs are labeled). Writes eval_report.json.
-
-Consensus labels (majority vote, ties -> DISTINCT) come from
-app/services/eval/report.py so the API and this script can never disagree.
-
-Usage: python scripts/run_eval.py
+For reproducible results use export_research_dataset.py followed by
+run_research_experiment.py (train-only fitting, dev selection, untouched test).
+Usage: python scripts/run_eval.py [--output eval_exploratory_report.json]
 """
 
+import argparse
 import ast
 import asyncio
 import json
@@ -34,24 +27,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from sqlalchemy import text
 
 from app.db.postgres import async_session_maker
-from app.services.eval.metrics import (
-    auroc,
-    best_f1_threshold,
-    bootstrap_ci,
-    brier_score,
-    expected_calibration_error,
-    f1_at_threshold,
-    mcnemar_test,
-    reliability_bins,
-)
-from app.services.eval.report import (
-    ENGINE_OPERATING_POINT,
-    MIN_MEANINGFUL_PAIRS,
-    POSITIVE_LABELS,
-    consensus,
-)
+from app.services.eval.metrics import mcnemar_test
+from app.services.eval.report import ENGINE_OPERATING_POINT, build_report, consensus, score_diagnostics
 
-OUT = Path(__file__).resolve().parent.parent / "eval_report.json"
+OUT = Path(__file__).resolve().parent.parent / "eval_exploratory_report.json"
 
 
 def parse_embedding(raw) -> "np.ndarray":
@@ -69,14 +48,16 @@ async def load_labeled() -> list[dict]:
             await db.execute(
                 text(
                     """
-                    SELECT p.id::text AS pid, p.bucket, p.sim_score AS sim,
+                    SELECT p.id AS pid, p.bucket, p.sim_score AS sim,
+                           p.split, p.event_group,
                            ta.claim_text AS text_a, tb.claim_text AS text_b,
                            ta.embedding AS emb_a, tb.embedding AS emb_b,
-                           l.annotator, l.label
+                           l.annotator, l.annotator_user_id, l.origin, l.label, l.mutation_types
                     FROM eval_pairs p
                     JOIN claims ta ON ta.id = p.claim_a_id
                     JOIN claims tb ON tb.id = p.claim_b_id
                     JOIN eval_pair_labels l ON l.pair_id = p.id
+                    ORDER BY p.id, l.origin, l.annotator
                     """
                 )
             )
@@ -84,8 +65,7 @@ async def load_labeled() -> list[dict]:
     return [dict(r._mapping) for r in rows]
 
 
-# `consensus` lives in app/services/eval/report.py: deterministic tie-break
-# (Counter + explicit DISTINCT preference), shared with GET /eval/report.
+# Primary consensus is shared with the API; weak votes never enter it.
 
 
 def tfidf_scores(texts_a: list[str], texts_b: list[str]) -> np.ndarray:
@@ -109,97 +89,44 @@ def sbert_scores(rows: list[dict]) -> np.ndarray:
     return np.asarray(out, dtype=np.float32)
 
 
-def evaluate(rows: list[dict]) -> dict:
+def evaluate(rows: list[dict], n_boot: int = 400, seed: int = 1729) -> dict:
+    report = build_report(rows, n_boot=n_boot, seed=seed)
     pairs = consensus(rows)
-    labels = [str(r["label"]) in POSITIVE_LABELS for r in pairs]
+    if not pairs:
+        return report
+    labels = [r["label"] in ("SAME_STORY", "EVOLVED") for r in pairs]
     methods = {
-        "sbert": sbert_scores(pairs),
-        "tfidf": tfidf_scores([r["text_a"] for r in pairs], [r["text_b"] for r in pairs]),
-        "engine_embedding": np.asarray([float(r["sim"]) for r in pairs], dtype=np.float32),
+        "engine_embedding": [float(r["sim"]) for r in pairs],
+        "tfidf": list(map(float, tfidf_scores([r["text_a"] for r in pairs], [r["text_b"] for r in pairs]))),
     }
-    scored = {name: list(map(float, s)) for name, s in methods.items()}
-
-    report: dict = {"n_pairs": len(pairs), "n_votes": len(rows), "n_positive": sum(labels)}
-    for name, s in scored.items():
-        report[name] = {
-            "auroc": round(auroc(s, labels), 4),
-            "auroc_ci95": bootstrap_ci(s, labels, auroc, n_boot=400),
-            "best_f1": {
-                k: (round(v, 4) if isinstance(v, float) else v)
-                for k, v in best_f1_threshold(s, labels).items()
-            },
-            "f1_at_engine_threshold": {
-                k: (round(v, 4) if isinstance(v, float) else v)
-                for k, v in f1_at_threshold(s, labels, ENGINE_OPERATING_POINT).items()
-            },
-            "brier": brier_score(s, labels),
-            "ece": expected_calibration_error(s, labels),
-        }
-
-    # paired significance at the shared operating point
-    report["significance"] = {
-        "engine_embedding_vs_tfidf": mcnemar_test(
-            scored["engine_embedding"], scored["tfidf"], labels, ENGINE_OPERATING_POINT
-        ),
-        "sbert_vs_tfidf": mcnemar_test(
-            scored["sbert"], scored["tfidf"], labels, ENGINE_OPERATING_POINT
-        ),
+    if all(r.get("emb_a") is not None and r.get("emb_b") is not None for r in pairs):
+        methods["sbert"] = list(map(float, sbert_scores(pairs)))
+    else:
+        report["embedding_recomputation_message"] = "sbert diagnostic omitted: actual stored embeddings unavailable for some human-gold pairs"
+    for name, scores in methods.items():
+        diagnostics = score_diagnostics([{**pair, "sim": score} for pair, score in zip(pairs, scores)], n_boot=n_boot, seed=seed)["metrics"]
+        report[name] = {**diagnostics, "f1_at_engine_threshold": diagnostics["f1_at_operating_point"], "fitted_on": "same diagnostic sample (TF-IDF only); not train/dev/test"}
+    report["paired_same_sample_diagnostics"] = {
+        "engine_embedding_vs_tfidf": mcnemar_test(methods["engine_embedding"], methods["tfidf"], labels, ENGINE_OPERATING_POINT),
+        "warning": "Exploratory discordance only; correlated event/claim groups and multiple comparisons are not accounted for",
     }
-    report["reliability_engine_embedding"] = reliability_bins(
-        scored["engine_embedding"], labels
-    )
-
-    # per-bucket agreement between engine similarity and humans
-    buckets: dict[str, dict[str, int]] = {}
-    for r in pairs:
-        b = buckets.setdefault(r["bucket"], {"n": 0, "SAME_STORY": 0, "EVOLVED": 0, "DISTINCT": 0})
-        b["n"] += 1
-        b[r["label"]] += 1
-    report["by_bucket"] = buckets
-
-    if len(pairs) < MIN_MEANINGFUL_PAIRS:
-        report["warning"] = (
-            f"n={len(pairs)} consensus pairs — indicative only until "
-            f"~{MIN_MEANINGFUL_PAIRS}+ pairs are labeled; do not quote as a result"
-        )
     return report
 
 
 async def main() -> None:
+    parser = argparse.ArgumentParser(description="Exploratory live-corpus diagnostics, never publication results")
+    parser.add_argument("--output", type=Path, default=OUT)
+    args = parser.parse_args()
+    if args.output.exists():
+        parser.error("Output already exists; choose a new --output path to preserve previous diagnostics")
     rows = await load_labeled()
-    if not rows:
-        print("no labeled pairs yet — label some via POST /api/v1/eval/label")
-        return
-    report = evaluate(rows)  # evaluate() applies the shared consensus itself
-    OUT.write_text(json.dumps(report, indent=2), encoding="utf-8")
-
-    print(f"pairs evaluated (consensus): {report['n_pairs']}  "
-          f"positive (same story): {report['n_positive']}  votes: {report['n_votes']}")
-    print(f"{'method':<18}{'AUROC':>7}{'95% CI':>16}{'best-F1':>9}{'F1@0.60':>9}"
-          f"{'Brier':>7}{'ECE':>7}")
-
-    def _fmt(v: object) -> str:
-        return f"{float(v):.3f}" if isinstance(v, (int, float)) else "  n/a"
-
-    for name in ("sbert", "tfidf", "engine_embedding"):
-        m = report[name]
-        ci = m["auroc_ci95"] or {}
-        ci_txt = (
-            f"[{ci['low']:.2f},{ci['high']:.2f}]"
-            if "low" in ci and "high" in ci
-            else "n/a"
-        )
-        bf = m["best_f1"]
-        f1e = m["f1_at_engine_threshold"]
-        print(f"{name:<18}{m['auroc']:>7.3f}{ci_txt:>16}{(bf['f1'] or 0):>9.3f}"
-              f"{(f1e['f1'] or 0):>9.3f}{_fmt(m['brier']):>7}{_fmt(m['ece']):>7}")
-
-    sig = report["significance"]["engine_embedding_vs_tfidf"]
-    print(f"\nMcNemar engine vs tfidf @0.60: b={sig['b']:.0f} c={sig['c']:.0f} "
-          f"p={sig['p_value']:.4f}")
-    if report.get("warning"):
-        print(f"WARNING: {report['warning']}")
-    print(f"\nreport written to {OUT}")
+    report = evaluate(rows)
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    with args.output.open("x", encoding="utf-8") as file:
+        json.dump(report, file, sort_keys=True, indent=2, allow_nan=False)
+    print(f"Exploratory human consensus pairs={report['n_pairs']}; human votes={report['n_votes']}; all-origin votes={report['n_votes_all_origins']}")
+    print(f"WARNING: {report['warning']}")
+    print(f"Diagnostic report: {args.output}; for research use the frozen-dataset CLI")
 
 
 if __name__ == "__main__":

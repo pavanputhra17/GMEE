@@ -61,6 +61,7 @@ describe('<CorpusExplorer/> — real corpus listing', () => {
     await waitFor(() =>
       expect(corpusApi.list).toHaveBeenCalledWith(
         expect.objectContaining({ q: 'mutation', offset: 0 }),
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
       ),
     );
   });

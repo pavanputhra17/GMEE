@@ -1,4 +1,4 @@
-import { apiClient } from './client';
+import { apiClient, type ApiRequestOptions } from './client';
 
 export interface DashboardSnapshot {
   generated_at: string;
@@ -22,5 +22,5 @@ export interface DashboardSnapshot {
   } | null;
 }
 
-export const fetchDashboard = (): Promise<DashboardSnapshot> =>
-  apiClient.get('/dashboard');
+export const fetchDashboard = (options?: ApiRequestOptions): Promise<DashboardSnapshot> =>
+  apiClient.get('/dashboard', options);

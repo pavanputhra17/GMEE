@@ -2,6 +2,9 @@ import React, { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Database, Search, ExternalLink, Zap } from 'lucide-react';
 import { corpusApi, CorpusStats } from '../api/corpus';
+import { usePollingPolicy } from '../lib/polling';
+import { safeHttpUrl } from '../lib/urls';
+import { QueryError } from './QueryError';
 
 /**
  * VectorTelemetry — REAL corpus stats + working semantic search.
@@ -12,17 +15,20 @@ import { corpusApi, CorpusStats } from '../api/corpus';
 export const VectorTelemetry: React.FC = () => {
   const [q, setQ] = useState('');
   const [submitted, setSubmitted] = useState('');
+  const polling = usePollingPolicy(15000);
 
   const stats = useQuery({
     queryKey: ['corpus-stats'],
-    queryFn: () => corpusApi.stats() as Promise<CorpusStats>,
-    refetchInterval: 15000,
+    queryFn: ({ signal }) => corpusApi.stats({ signal }) as Promise<CorpusStats>,
+    ...polling,
   });
 
   const results = useQuery({
     queryKey: ['semantic-search', submitted],
-    queryFn: () => corpusApi.search(submitted, 8),
+    queryFn: ({ signal }) => corpusApi.search(submitted, 8, { signal }),
     enabled: submitted.length >= 2,
+    ...polling,
+    refetchInterval: false,
   });
 
   const submit = (e: React.FormEvent) => {
@@ -45,11 +51,15 @@ export const VectorTelemetry: React.FC = () => {
         </div>
         {stats.data && (
           <span className="chip-brutal bg-hermes-panel-deep text-hermes-bone/70 border-hermes-bone/25 w-fit">
-            corpus {stats.data.earliest} → {stats.data.latest}
+            corpus {stats.data.earliest ?? 'unknown date'} → {stats.data.latest ?? 'unknown date'}
           </span>
         )}
       </div>
 
+      {stats.isLoading && <p role="status" className="text-xs font-mono">Loading corpus statistics…</p>}
+      {stats.isError && <><QueryError title="Corpus statistics unavailable" error={stats.error} onRetry={() => stats.refetch()} retrying={stats.isFetching} />
+        {stats.data && <p className="text-xs text-amber-300">Last real statistics may be stale.</p>}
+      </>}
       {/* Real stats row */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         {[
@@ -81,6 +91,7 @@ export const VectorTelemetry: React.FC = () => {
         <div className="flex flex-1 items-center border border-hermes-bone/25 bg-hermes-panel-deep px-3">
           <Search className="w-4 h-4 text-hermes-bone/40 mr-2" />
           <input
+            aria-label="Semantic search query"
             value={q}
             onChange={(e) => setQ(e.target.value)}
             placeholder='try "earthquake deaths" or "AI regulation"…'
@@ -96,30 +107,28 @@ export const VectorTelemetry: React.FC = () => {
       {submitted.length >= 2 && (
         <div className="border border-hermes-bone/20 bg-hermes-panel-deep p-4">
           <div className="text-[10px] font-mono uppercase tracking-widest text-hermes-bone/45 mb-3">
-            nearest neighbors for “{submitted}” · cosine similarity
+            nearest neighbors for “{submitted}” · cosine similarity (uncalibrated, not truth confidence)
           </div>
 
-          {results.isFetching ? (
-            <div className="space-y-2">
+          {results.isLoading ? (
+            <div role="status" aria-label="Loading semantic search results" className="space-y-2">
               {[...Array(4)].map((_, i) => (
                 <div key={i} className="shimmer h-10" />
               ))}
             </div>
           ) : results.isError ? (
-            <p className="font-mono text-xs text-hermes-red-bright">
-              Search failed — embeddings may still be backfilling.
-            </p>
+            <QueryError title="Semantic search unavailable" error={results.error} onRetry={() => results.refetch()} retrying={results.isFetching} />
           ) : (
             <div className="divide-y divide-hermes-bone/8">
               {results.data?.items.length === 0 && (
                 <p className="font-mono text-xs text-hermes-bone/50 py-2">
-                  No embeddings yet — run scripts/embed_articles.py first.
+                  No semantic matches returned for this query.
                 </p>
               )}
               {results.data?.items.map((r) => (
                 <a
                   key={r.id}
-                  href={r.url}
+                  href={safeHttpUrl(r.url)}
                   target="_blank"
                   rel="noreferrer"
                   className="group flex items-center gap-3 py-2"

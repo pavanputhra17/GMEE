@@ -1,4 +1,5 @@
 import React, { useEffect, useRef } from 'react';
+import { useAnimationActivity } from '../lib/useAnimationActivity';
 
 /**
  * AsciiEqualizer — a strip of crimson data-bars rendered as stacked
@@ -25,17 +26,16 @@ interface AsciiEqualizerProps {
 const AsciiEqualizer: React.FC<AsciiEqualizerProps> = ({
   count = 48,
   className,
-  label = 'telemetry equalizer',
+  label = 'Decorative equalizer — not telemetry',
 }) => {
   const hostRef = useRef<HTMLDivElement>(null);
+  const { animate } = useAnimationActivity(hostRef);
 
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
 
-    const reduced =
-      typeof window.matchMedia === 'function' &&
-      window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const reduced = !animate;
 
     // per-bar energy in [0,1]
     const energy = new Float32Array(count);
@@ -152,7 +152,7 @@ const AsciiEqualizer: React.FC<AsciiEqualizerProps> = ({
       cancelAnimationFrame(raf);
       delete (host as unknown as { __eqPulse?: unknown }).__eqPulse;
     };
-  }, [count]);
+  }, [count, animate]);
 
   void label;
 

@@ -1,4 +1,4 @@
-import { apiClient } from './client';
+import { apiClient, type ApiRequestOptions } from './client';
 
 export interface TimelineMember {
   id: string;
@@ -21,14 +21,16 @@ export interface TimelineCluster {
 }
 
 export const timelineApi = {
-  clusters: (limit = 60, articleId?: string) => {
+  clusters: (limit = 60, articleId?: string, options?: ApiRequestOptions) => {
     const params = new URLSearchParams({ limit: String(limit) });
     if (articleId) params.set('article_id', articleId);
-    return apiClient.get(`/graph/timeline?${params.toString()}`) as Promise<{
+    return apiClient.get(`/graph/timeline?${params.toString()}`, options) as Promise<{
       clusters: TimelineCluster[];
       count: number;
       /** true when the response is scoped to one story (article_id drill-down) */
       focused: boolean;
     }>;
   },
+  mutationSummary: (articleIds: string[], options?: ApiRequestOptions) =>
+    apiClient.post<{ summary: string }>('/graph/timeline/mutation-summary', { article_ids: articleIds }, { timeoutMs: 60_000, ...options, authenticated: true }),
 };

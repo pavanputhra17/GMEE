@@ -1,31 +1,43 @@
+import asyncio
 import logging
-from collections.abc import Sequence
 from datetime import UTC, datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.models.article import Article, NLPStatusEnum, ProcessingStatusEnum
+from app.models.article import Article, NLPStatusEnum
 from app.models.claim import Claim, ClaimEntity
 from app.services.nlp.embedding_service import EmbeddingService
 from app.services.nlp.entity_extractor import EntityExtractor
 from app.services.nlp.llm_client import LLMClient, get_llm_client
+from app.services.pipeline.ownership import (
+    Stage,
+    claim_articles,
+    extend_claims,
+    finish_article,
+    new_owner_token,
+    recover_expired,
+    release_unfinished,
+    sanitize_error,
+)
 
 logger = logging.getLogger(__name__)
 
 
 class NLPSummary(BaseModel):
     total_processed: int = 0
-    status_counts: dict[str, int] = {
+    status_counts: dict[str, int] = Field(default_factory=lambda: {
         NLPStatusEnum.completed.value: 0,
         NLPStatusEnum.skipped.value: 0,
         NLPStatusEnum.failed.value: 0,
-    }
+    })
     claims_extracted: int = 0
     llm_calls_made: int = 0
-    errors: list[str] = []
+    errors: list[str] = Field(default_factory=list)
+    lost_ownership: int = 0
+    recovered: dict[str, int] = Field(default_factory=dict)
 
 
 class NLPOrchestrator:
@@ -34,118 +46,131 @@ class NLPOrchestrator:
         self.max_articles = getattr(self.settings, 'NLP_MAX_ARTICLES_PER_CYCLE', 10)
         self.llm_client = llm_client or get_llm_client()
 
-    async def run_nlp_cycle(self, db: AsyncSession) -> NLPSummary:
+    async def run_nlp_cycle(self, db: AsyncSession, *, chain_evolution: bool = True) -> NLPSummary:
         summary = NLPSummary()
-        
-        # Select pending articles
-        stmt = select(Article).where(
-            Article.processing_status == ProcessingStatusEnum.processed,
-            Article.nlp_status == NLPStatusEnum.pending
-        ).limit(self.max_articles)
-        
-        result = await db.execute(stmt)
-        articles: Sequence[Article] = result.scalars().all()
-        
-        if not articles:
+        owner = new_owner_token("nlp")
+
+        recovery = await recover_expired(db, Stage.nlp)
+        summary.recovered = {"requeued": recovery.requeued, "failed": recovery.failed}
+
+        # Atomic claim: concurrent workers get disjoint articles.
+        claimed_ids = await claim_articles(db, Stage.nlp, owner, self.max_articles)
+        if not claimed_ids:
             logger.info("No articles pending NLP processing.")
             return summary
-            
-        logger.info(f"Starting NLP cycle. Found {len(articles)} pending articles (cap: {self.max_articles}).")
-        
-        # Note: with the HF fallback there is always a working extractor;
-        # set LLM_BACKEND=none in .env to restore legacy skip behaviour.
 
-        logger.info(f"Will make up to {len(articles)} LLM API calls this cycle.")
-        
-        for article in articles:
+        logger.info(
+            "Starting NLP cycle. Claimed %d pending articles (cap: %d).",
+            len(claimed_ids),
+            self.max_articles,
+        )
+        rows = (
+            await db.execute(
+                select(Article.id, Article.cleaned_content, Article.content).where(
+                    Article.id.in_(claimed_ids)
+                )
+            )
+        ).all()
+        texts = {row.id: (row.cleaned_content or row.content) for row in rows}
+
+        try:
+            for index, article_id in enumerate(claimed_ids):
+                if index:
+                    # Heartbeat between (potentially slow) LLM calls.
+                    await extend_claims(db, Stage.nlp, owner)
+                await self._process_one(db, article_id, texts.get(article_id), owner, summary)
+        finally:
+            # Anything still claimed (e.g. cancellation) goes back to the queue.
+            released = await release_unfinished(db, Stage.nlp, owner)
+            if released:
+                logger.warning("Released %d unfinished NLP claims back to pending", released)
+
+        logger.info(
+            "NLP cycle completed. Processed %d articles. Extracted %d claims.",
+            summary.total_processed,
+            summary.claims_extracted,
+        )
+
+        if chain_evolution:
+            # Trigger evolution cycle (it has its own guards)
             try:
-                # 1. Claim article for processing
-                article.nlp_status = NLPStatusEnum.processing
-                await db.commit()
-                await db.refresh(article)
-                
-                # We need cleaned_content to extract claims
-                text_to_process = article.cleaned_content or article.content
-                if not text_to_process:
-                    # Nothing to process
-                    article.nlp_status = NLPStatusEnum.completed
-                    await db.commit()
-                    summary.status_counts[NLPStatusEnum.completed.value] += 1
-                    summary.total_processed += 1
-                    continue
-                
-                # 2. Call LLM to extract claims
+                from app.services.evolution.orchestrator import EvolutionOrchestrator
+                evo_orch = EvolutionOrchestrator()
+                evo_summary = await evo_orch.run_evolution_cycle(db)
+                logger.info("Auto-triggered evolution cycle result: %s", evo_summary)
+            except Exception:
+                logger.exception("Error during auto-triggered evolution cycle")
+
+        return summary
+
+    async def _process_one(
+        self,
+        db: AsyncSession,
+        article_id: object,
+        text_to_process: str | None,
+        owner: str,
+        summary: NLPSummary,
+    ) -> None:
+        try:
+            new_claims: list[Claim] = []
+            if text_to_process:
                 extracted_claims_data = await self.llm_client.extract_claims(text_to_process)
                 summary.llm_calls_made += 1
-                
-                # 3. Process each claim
-                new_claims = []
                 for claim_data in extracted_claims_data:
-                    # NER
-                    entities = EntityExtractor.extract_entities(claim_data.claim_text)
-                    # Embeddings
-                    embedding = EmbeddingService.generate_embedding(claim_data.claim_text)
-                    
+                    # CPU-bound inference (and a possible first-use model
+                    # load) runs in a worker thread, not on the event loop.
+                    entities = await asyncio.to_thread(
+                        EntityExtractor.extract_entities, claim_data.claim_text, allow_load=True
+                    )
+                    embedding = await asyncio.to_thread(
+                        EmbeddingService.generate_embedding, claim_data.claim_text, allow_load=True
+                    )
                     claim_model = Claim(
-                        article_id=article.id,
+                        article_id=article_id,
                         claim_text=claim_data.claim_text,
                         confidence=claim_data.confidence,
                         embedding=embedding,
-                        extracted_at=datetime.now(UTC)
+                        extracted_at=datetime.now(UTC),
                     )
-                    
-                    # Add entities to claim
                     for ent in entities:
                         claim_model.entities.append(ClaimEntity(
                             entity_text=ent.entity_text,
                             entity_type=ent.entity_type,
                             start_char=ent.start_char,
-                            end_char=ent.end_char
+                            end_char=ent.end_char,
                         ))
-                    
                     new_claims.append(claim_model)
-                
-                if new_claims:
-                    db.add_all(new_claims)
-                    summary.claims_extracted += len(new_claims)
-                    
-                # Mark as completed
-                article.nlp_status = NLPStatusEnum.completed
-                await db.commit()
-                
-                summary.status_counts[NLPStatusEnum.completed.value] += 1
-                summary.total_processed += 1
-                
-            except Exception as e:
-                article_id = article.id
-                logger.exception(f"Error during NLP processing for article {article_id}")
-                
-                # Re-fetch and mark as failed
-                await db.rollback()
-                try:
-                    failed_stmt = select(Article).where(Article.id == article_id)
-                    failed_res = await db.execute(failed_stmt)
-                    failed_article = failed_res.scalar_one_or_none()
-                    if failed_article:
-                        failed_article.nlp_status = NLPStatusEnum.failed
-                        await db.commit()
-                except Exception as fallback_e:
-                    logger.error(f"Failed to mark article {article_id} as failed: {fallback_e}")
-                    await db.rollback()
-                    
-                summary.status_counts[NLPStatusEnum.failed.value] += 1
-                summary.errors.append(f"Article {article_id}: {e}")
-                summary.total_processed += 1
-                
-        logger.info(f"NLP cycle completed. Processed {summary.total_processed} articles. Extracted {summary.claims_extracted} claims.")
-        
-        # Trigger evolution cycle (it has its own guards)
-        try:
-            from app.services.evolution.orchestrator import EvolutionOrchestrator
-            evo_orch = EvolutionOrchestrator()
-            evo_summary = await evo_orch.run_evolution_cycle(db)
-            logger.info(f"Auto-triggered evolution cycle result: {evo_summary}")
-        except Exception:
-            logger.exception("Error during auto-triggered evolution cycle")
 
-        return summary
+            # Fenced status write first, then claims, in ONE transaction: if
+            # ownership was lost the rollback discards these claims too.
+            won = await finish_article(
+                db, Stage.nlp, article_id, owner,  # type: ignore[arg-type]
+                status=NLPStatusEnum.completed, commit=False,
+            )
+            if not won:
+                summary.lost_ownership += 1
+                return
+            if new_claims:
+                db.add_all(new_claims)
+            await db.commit()
+            summary.claims_extracted += len(new_claims)
+            summary.status_counts[NLPStatusEnum.completed.value] += 1
+            summary.total_processed += 1
+
+        except Exception as e:
+            logger.exception("Error during NLP processing for article %s", article_id)
+            await db.rollback()
+            error = sanitize_error(e)
+            try:
+                await finish_article(
+                    db, Stage.nlp, article_id, owner,  # type: ignore[arg-type]
+                    status=NLPStatusEnum.failed, error=error,
+                )
+            except Exception as fallback_e:
+                logger.error(
+                    "Failed to mark article %s as failed: %s", article_id, sanitize_error(fallback_e)
+                )
+                await db.rollback()
+            summary.status_counts[NLPStatusEnum.failed.value] += 1
+            summary.errors.append(f"Article {article_id}: {error}")
+            summary.total_processed += 1

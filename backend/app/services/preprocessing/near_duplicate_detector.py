@@ -1,6 +1,5 @@
 import logging
 import uuid
-from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 
 from datasketch import MinHash, MinHashLSH
@@ -41,18 +40,25 @@ class NearDuplicateDetector:
         window_days = getattr(self.settings, 'NEAR_DUP_WINDOW_DAYS', 14)
         cutoff_date = datetime.now(UTC) - timedelta(days=window_days)
         
-        # Load all articles (raw or processed) from the cutoff to build the index
-        # We only need cleaned_content and id, canonical_article_id, collected_at
-        stmt = select(Article).where(
+        # Only the columns the index needs; rows become transient snapshots
+        # (never session-bound) so a later rollback cannot expire them.
+        stmt = select(
+            Article.id, Article.cleaned_content, Article.collected_at, Article.canonical_article_id
+        ).where(
             Article.collected_at >= cutoff_date,
             Article.cleaned_content.is_not(None)
         )
         result = await self.db.execute(stmt)
-        articles: Sequence[Article] = result.scalars().all()
-        
-        for article in articles:
-            if not article.cleaned_content:
+
+        for row in result.all():
+            if not row.cleaned_content:
                 continue
+            article = Article(
+                id=row.id,
+                cleaned_content=row.cleaned_content,
+                collected_at=row.collected_at,
+                canonical_article_id=row.canonical_article_id,
+            )
             m = self._create_minhash(article.cleaned_content)
             # Use string representation of UUID as key
             key = str(article.id)

@@ -52,7 +52,7 @@ describe('<LiveAuditFeed/>', () => {
   it('shows the unavailable-state on API failure', async () => {
     vi.mocked(corpusApi.recent).mockRejectedValueOnce(new Error('down'));
     wrap(<LiveAuditFeed />);
-    expect(await screen.findByText('stream unavailable')).toBeTruthy();
+    expect(await screen.findByText('Stream unavailable')).toBeTruthy();
   });
 });
 
@@ -97,7 +97,7 @@ describe('<VectorTelemetry/> — semantic search surface', () => {
     fireEvent.submit(input.closest('form')!);
 
     await waitFor(() => {
-      expect(corpusApi.search).toHaveBeenCalledWith('election map', 8);
+      expect(corpusApi.search).toHaveBeenCalledWith('election map', 8, expect.objectContaining({ signal: expect.any(AbortSignal) }));
     });
   });
 });

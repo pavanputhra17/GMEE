@@ -2,6 +2,8 @@ import React from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { AlertTriangle, BellRing, Siren } from 'lucide-react';
 import { alertsApi } from '../api/alerts';
+import { usePollingPolicy } from '../lib/polling';
+import { QueryError } from './QueryError';
 
 /**
  * Early warning board — persisted alert rows (deduplicated in the `alerts`
@@ -66,26 +68,27 @@ const Stat: React.FC<{ label: string; value: number; prior: number }> = ({
 );
 
 export const EarlyWarning: React.FC = () => {
+  const polling = usePollingPolicy(60000);
   const snapshot = useQuery({
     queryKey: ['alerts', 'snapshot'],
-    queryFn: () => alertsApi.snapshot(),
-    refetchInterval: 60000
+    queryFn: ({ signal }) => alertsApi.snapshot({ signal }),
+    ...polling
   });
 
   const feed = useQuery({
     queryKey: ['alerts', 'feed'],
-    queryFn: () => alertsApi.feed(12),
-    refetchInterval: 60000
+    queryFn: ({ signal }) => alertsApi.feed(12, { signal }),
+    ...polling
   });
 
   const items = feed.data?.items ?? [];
   const signals = (snapshot.data?.alerts ?? []).filter((s) => s.type !== 'QUIET');
   const quiet =
-    snapshot.data !== undefined && signals.length === 0 && items.length === 0;
+    snapshot.isSuccess && feed.isSuccess && signals.length === 0 && items.length === 0;
   const stats = snapshot.data?.stats;
   const counts = feed.data?.counts;
-  const loading = snapshot.isLoading || feed.isLoading;
-  const unreachable = !loading && snapshot.isError && feed.isError;
+  const loading = !snapshot.data && !feed.data && (snapshot.isLoading || feed.isLoading);
+  const unreachable = !loading && snapshot.isError && feed.isError && !snapshot.data && !feed.data;
 
   return (
     <section className="card-brutal-dark p-6 flex flex-col gap-5">
@@ -109,6 +112,12 @@ export const EarlyWarning: React.FC = () => {
         </div>
       </div>
 
+      {snapshot.isError && <QueryError title="Alert snapshot unavailable" error={snapshot.error} onRetry={() => snapshot.refetch()} retrying={snapshot.isFetching} />}
+      {feed.isError && <QueryError title="Alert feed unavailable" error={feed.error} onRetry={() => feed.refetch()} retrying={feed.isFetching} />}
+      {((snapshot.isError && snapshot.data) || (feed.isError && feed.data)) && <p className="text-xs text-amber-300">Last real alert data may be stale; failed sources are not treated as quiet.</p>}
+      {feed.isSuccess && items.length === 0 && !quiet && <p className="text-xs font-mono text-hermes-bone/55">No persisted alerts returned.</p>}
+      {snapshot.isSuccess && signals.length === 0 && !quiet && <p className="text-xs font-mono text-hermes-bone/55">No snapshot anomalies returned.</p>}
+
       {stats && (
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
           <Stat label="Articles · 24h" value={stats.articles_24h} prior={stats.articles_prior_24h} />
@@ -118,7 +127,7 @@ export const EarlyWarning: React.FC = () => {
       )}
 
       {loading ? (
-        <div className="space-y-2" data-testid="alerts-skeleton">
+        <div role="status" aria-label="Loading alerts" className="space-y-2" data-testid="alerts-skeleton">
           {[0, 1, 2].map((i) => (
             <div key={i} className="shimmer h-14" />
           ))}

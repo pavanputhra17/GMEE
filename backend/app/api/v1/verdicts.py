@@ -1,24 +1,199 @@
-"""Public verdict endpoints — every number is backed by stored evidence."""
+"""Corpus-local checking and disclosed stored verdicts, including legacy scores."""
 
+import hashlib
 import json
 import logging
-from typing import Any
+import re
+from datetime import datetime
+from typing import Any, Literal
+from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Query, Request
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from pydantic import BaseModel, ConfigDict, field_validator
 from pydantic import Field as PField
-from sqlalchemy import bindparam, text
+from sqlalchemy import bindparam, func, select, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import get_current_user, get_db_session
+from app.core import ops_security
 from app.db.postgres import async_session_maker
+from app.models.claim import Claim
+from app.models.evolution import FeedbackVerdict
+from app.models.user import User
 from app.services.verdict.engine import (
     DISPUTED_BANDS,
+    METHOD_VERSION,
+    SCORE_KIND,
     SUPPORTED_BANDS,
+    NLIUnavailableError,
+    Stance,
     engine_config,
+)
+from app.services.verdict.evidence import (
+    Assessment,
+    ClaimCheckResult,
+    EmbeddingUnavailableError,
+    PassageSource,
+    check_claim,
 )
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+class VerdictCheckBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    claim_text: str = PField(strict=True, min_length=10, max_length=2000)
+    as_of: datetime | None = None
+    limit: int = PField(default=6, strict=True, ge=1, le=12)
+
+    @field_validator("claim_text", mode="before")
+    @classmethod
+    def trim_claim(cls, value: Any) -> Any:
+        return value.strip() if isinstance(value, str) else value
+
+    @field_validator("as_of", mode="before")
+    @classmethod
+    def require_iso_datetime(cls, value: Any) -> Any:
+        if value is not None and not isinstance(value, datetime):
+            if not isinstance(value, str) or not re.match(
+                r"^\d{4}-\d{2}-\d{2}[Tt ]\d{2}:\d{2}", value
+            ):
+                raise ValueError(
+                    "as_of must be an ISO datetime, not a date or epoch number"
+                )
+        return value
+
+
+class VerdictCheckEvidence(BaseModel):
+    claim_id: str
+    article_id: str
+    text: str
+    passage: str
+    passage_source: PassageSource
+    url: str
+    title: str
+    domain: str | None
+    published_at: datetime | None
+    similarity: float
+    stance: Stance
+    syndication_group: str
+
+
+class VerdictCheckResponse(BaseModel):
+    claim_text: str
+    assessment: Assessment
+    evidence: list[VerdictCheckEvidence]
+    warnings: list[str]
+    score_kind: Literal["uncalibrated_heuristic"]
+    observed_at: datetime
+    method_version: str
+
+
+@router.post("/check", response_model=VerdictCheckResponse)
+async def check_verdict(
+    body: VerdictCheckBody,
+    db: AsyncSession = Depends(get_db_session),
+    _current_user: User = Depends(get_current_user),
+) -> ClaimCheckResult:
+    """Authenticated, read-only checking against the existing local corpus."""
+    try:
+        return await check_claim(
+            db, body.claim_text, as_of=body.as_of, limit=body.limit
+        )
+    except (EmbeddingUnavailableError, NLIUnavailableError) as exc:
+        logger.warning("Corpus checking model unavailable: %s", exc)
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except SQLAlchemyError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Corpus search is unavailable. Check PostgreSQL/pgvector and retry.",
+        ) from exc
+
+
+@router.post("/check-external")
+async def check_verdict_external(
+    body: VerdictCheckBody,
+    _current_user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Authenticated, external web grounding using Wikipedia Action API."""
+    import httpx
+    import urllib.parse
+    from app.services.nlp.llm_client import get_llm_client
+    
+    query = urllib.parse.quote(body.claim_text[:100]) # use first 100 chars for search
+    url = f"https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch={query}&utf8=&format=json"
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(url, timeout=10.0)
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as e:
+        logger.error(f"Wikipedia search failed: {e}")
+        raise HTTPException(status_code=503, detail="External search unavailable")
+        
+    search_results = data.get("query", {}).get("search", [])
+    if not search_results:
+        return {
+            "claim": body.claim_text,
+            "verdict": "UNVERIFIABLE",
+            "explanation": "No relevant external sources found.",
+            "sources": []
+        }
+        
+    # Build context from top 3 results
+    top_results = search_results[:3]
+    context = "\n\n".join([f"Source: Wikipedia - {r['title']}\nSnippet: {_v_clean(r['snippet'], 500)}" for r in top_results])
+    
+    llm = get_llm_client()
+    result = await llm.check_external_claim(body.claim_text, context)
+    
+    return {
+        "claim": body.claim_text,
+        "verdict": result.get("verdict", "UNVERIFIABLE"),
+        "explanation": result.get("explanation", ""),
+        "sources": [{"title": r["title"], "url": f"https://en.wikipedia.org/wiki/{urllib.parse.quote(r['title'])}"} for r in top_results]
+    }
+
+
+def _parse_evidence(value: Any) -> dict[str, Any] | None:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (TypeError, ValueError):
+            return None
+    return value if isinstance(value, dict) else None
+
+
+def _score_metadata(value: Any) -> dict[str, Any]:
+    evidence = _parse_evidence(value) or {}
+    version = evidence.get("method_version")
+    if version == METHOD_VERSION:
+        warnings = evidence.get("warnings", [])
+        return {
+            "score_kind": SCORE_KIND,
+            "method_version": version,
+            "warnings": [w for w in warnings if isinstance(w, str)]
+            if isinstance(warnings, list)
+            else [],
+            "score_disclosure": "The probability field is an uncalibrated heuristic, "
+            "not a probability of truth.",
+        }
+    return {
+        "score_kind": "legacy_unverified",
+        "method_version": version if isinstance(version, str) else None,
+        "warnings": [
+            "Legacy or unrecognized verdict evidence: stance-grounded support "
+            "has not been verified; similarity-only support or self-derived "
+            "outlet priors may have been used. This score is not a calibrated "
+            "probability. Stored records have not been automatically rescored."
+        ],
+    }
 
 
 @router.get("")
@@ -27,6 +202,7 @@ async def list_verdicts(
     outlet: str = Query("", max_length=80),
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
+    db: AsyncSession = Depends(get_db_session),
 ) -> dict[str, Any]:
     where = ["c.verdict IS NOT NULL"]
     params: dict[str, object] = {"limit": limit, "offset": offset}
@@ -37,45 +213,65 @@ async def list_verdicts(
         where.append("a.domain = :outlet")
         params["outlet"] = outlet
     where_sql = " AND ".join(where)
-
-    count_params = {k: v for k, v in params.items() if k not in ("limit", "offset")}
-
-    async with async_session_maker() as db:
-        total = (
-            await db.execute(
-                text(
-                    f"SELECT COUNT(*) FROM claims c JOIN articles a ON a.id=c.article_id "
-                    f"WHERE {where_sql}"
-                ),
-                count_params,
-            )
-        ).scalar()
+    try:
+        # Count and page share one statement snapshot. The LEFT JOIN preserves
+        # the true total even when offset is beyond the last matching item.
         rows = (
-            await db.execute(
-                text(
-                    f"""
-                    SELECT c.id::text AS id, c.claim_text, c.verdict,
-                           c.verdict_probability AS probability,
-                           c.confidence AS extraction_confidence,
-                           a.domain AS outlet, a.title AS article_title, a.url AS article_url,
-                           c.extracted_at
-                    FROM claims c JOIN articles a ON a.id = c.article_id
-                    WHERE {where_sql}
-                    ORDER BY c.verdict_probability ASC NULLS LAST
-                    LIMIT :limit OFFSET :offset
-                    """
-                ),
-                params,
+            (
+                await db.execute(
+                    text(f"""
+            WITH matching AS (
+                SELECT c.id, c.verdict_probability
+                FROM claims c JOIN articles a ON a.id = c.article_id
+                WHERE {where_sql}
+            ), page AS (
+                SELECT id, verdict_probability FROM matching
+                ORDER BY verdict_probability ASC NULLS LAST, id ASC
+                LIMIT :limit OFFSET :offset
             )
-        ).all()
+            SELECT totals.total, c.id::text AS id, c.claim_text, c.verdict,
+                   c.verdict_probability AS probability,
+                   c.confidence AS extraction_confidence,
+                   a.domain AS outlet, a.title AS article_title, a.url AS article_url,
+                   c.extracted_at, c.verdict_evidence AS score_evidence
+            FROM (SELECT COUNT(*) AS total FROM matching) totals
+            LEFT JOIN page ON TRUE
+            LEFT JOIN claims c ON c.id = page.id
+            LEFT JOIN articles a ON a.id = c.article_id
+            ORDER BY page.verdict_probability ASC NULLS LAST, page.id ASC
+        """),
+                    params,
+                )
+            )
+            .mappings()
+            .all()
+        )
+    except SQLAlchemyError as exc:
+        logger.exception("Stored verdict pagination failed")
+        raise HTTPException(
+            status_code=503, detail="Verdict storage is unavailable; retry later."
+        ) from exc
 
-    items = []
-    for r in rows:
-        m = dict(r._mapping)
-        m["extracted_at"] = m["extracted_at"].isoformat() if m["extracted_at"] else None
-        items.append(m)
-
-    return {"total": total or 0, "items": items}
+    total = int(rows[0]["total"] or 0) if rows else 0
+    items: list[dict[str, Any]] = []
+    for row in rows:
+        if row["id"] is None:
+            continue
+        item = dict(row)
+        item.pop("total", None)
+        item.update(_score_metadata(item.pop("score_evidence", None)))
+        timestamp = item.get("extracted_at")
+        item["extracted_at"] = (
+            timestamp.isoformat() if isinstance(timestamp, datetime) else timestamp
+        )
+        items.append(item)
+    return {
+        "total": total,
+        "items": items,
+        "limit": limit,
+        "offset": offset,
+        "has_more": offset + len(items) < total,
+    }
 
 
 @router.get("/stats")
@@ -114,12 +310,17 @@ async def verdict_stats() -> dict[str, Any]:
         ).all()
 
     def cred(sup: int, dis: int) -> float:
-        # Laplace-smoothed credibility for display; n=0 -> neutral 0.5
+        # Compatibility display proxy from engine labels, NOT outlet reliability.
         alpha = 4.0
         return round((sup + alpha * 0.5) / (sup + dis + alpha), 3) if sup + dis else 0.5
 
     return {
         "total_claims": total_claims or 0,
+        "warnings": [
+            "Stored score aggregates may mix legacy and uncalibrated verdicts.",
+            "Outlet credibility is a compatibility proxy of engine labels, "
+            "not independently measured outlet reliability.",
+        ],
         "distribution": [
             {
                 "band": r[0] or "UNSCORED",
@@ -135,6 +336,7 @@ async def verdict_stats() -> dict[str, Any]:
                 "supported": r[2],
                 "disputed": r[3],
                 "credibility": cred(r[2], r[3]),
+                "credibility_kind": "engine_label_proxy_not_outlet_reliability",
             }
             for r in outlets
         ],
@@ -143,18 +345,14 @@ async def verdict_stats() -> dict[str, Any]:
 
 @router.get("/leaderboard")
 async def outlet_leaderboard() -> dict[str, Any]:
-    """Outlets ranked by Laplace-smoothed credibility over their verdicted claims."""
+    """Legacy engine-label proxy ranking, not independent outlet reliability."""
     stats = await verdict_stats()
     ranked = sorted(stats["outlets"], key=lambda o: (-o["credibility"], -o["claims"]))
-    return {"ranking": ranked}
+    return {"ranking": ranked, "warnings": stats["warnings"]}
 
 
 # NOTE: dynamic routes MUST stay below every static GET route in this file —
 # "/{claim_id}" otherwise swallows "/summary", "/feedback" etc.
-
-
-
-
 
 
 @router.get("/game/mutations")
@@ -173,16 +371,27 @@ async def mutation_chains(min_versions: int = 3, limit: int = 8) -> dict[str, An
             await db.execute(
                 text(
                     """
+                    WITH chosen AS (
+                        SELECT c.id, c.embedding, a.domain
+                        FROM claims c
+                        JOIN articles a ON a.id = c.article_id
+                        WHERE c.embedding IS NOT NULL
+                        ORDER BY c.extracted_at DESC
+                        LIMIT 400
+                    )
                     SELECT x.id::text AS src, y.id::text AS dst
-                    FROM claims x
-                    JOIN claims y
-                      ON x.id < y.id AND y.embedding IS NOT NULL
-                     AND (1 - (x.embedding <=> y.embedding)) >= 0.84
-                    JOIN articles ax ON ax.id = x.article_id
-                    JOIN articles ay ON ay.id = y.article_id
-                    WHERE x.embedding IS NOT NULL
-                      AND ax.domain <> ay.domain
-                    ORDER BY (1 - (x.embedding <=> y.embedding)) DESC
+                    FROM chosen x
+                    JOIN LATERAL (
+                        SELECT c2.id, a2.domain
+                        FROM claims c2
+                        JOIN articles a2 ON a2.id = c2.article_id
+                        WHERE c2.embedding IS NOT NULL 
+                          AND c2.id <> x.id
+                          AND a2.domain <> x.domain
+                        ORDER BY c2.embedding <=> x.embedding
+                        LIMIT 5
+                    ) y ON TRUE
+                    WHERE (1 - (x.embedding <=> (SELECT embedding FROM claims WHERE id = y.id))) >= 0.84
                     LIMIT 4000
                     """
                 )
@@ -249,12 +458,14 @@ async def mutation_chains(min_versions: int = 3, limit: int = 8) -> dict[str, An
             domains = {vv["domain"] for vv in versions}
             # a REAL mutation spans outlets; same-outlet boilerplate isn't one
             if len(versions) >= min_versions and len(domains) >= 2:
-                chains.append({
-                    "chain_id": g[0][:8],
-                    "size": len(versions),
-                    "distinct_outlets": len(domains),
-                    "versions": versions,
-                })
+                chains.append(
+                    {
+                        "chain_id": g[0][:8],
+                        "size": len(versions),
+                        "distinct_outlets": len(domains),
+                        "versions": versions,
+                    }
+                )
     chains.sort(key=lambda c: (-int(c["distinct_outlets"]), -int(c["size"])))
     result = chains[:limit]
     _MUT_CACHE["chains"] = (now, result)
@@ -264,6 +475,7 @@ async def mutation_chains(min_versions: int = 3, limit: int = 8) -> dict[str, An
 def _v_clean(val: Any, limit: int) -> str | None:
     import html as h
     import re as re_
+
     if not val:
         return None
     s = h.unescape(re_.compile(r"<[^>]*>").sub(" ", str(val)))
@@ -307,54 +519,54 @@ async def game_claim() -> dict[str, Any]:
 
 # ------------------------------------------------- human feedback (HIL)
 
+
 class VerdictFeedbackBody(BaseModel):
-    claim_id: str = PField(min_length=32, max_length=36)
-    vote: str = PField(pattern="^(AGREE|DISAGREE)$")
-    corrected_verdict: str | None = PField(
-        default=None,
-        pattern="^(SUPPORTED|PARTIALLY_SUPPORTED|UNRESOLVED|UNSUPPORTED|DISPUTED)$",
-    )
+    claim_id: UUID
+    vote: Literal["AGREE", "DISAGREE"]
+    corrected_verdict: (
+        Literal[
+            "SUPPORTED",
+            "PARTIALLY_SUPPORTED",
+            "UNRESOLVED",
+            "WEAKLY_CORROBORATED",
+            "UNSUPPORTED",
+            "DISPUTED",
+        ]
+        | None
+    ) = None
     comment: str | None = PField(default=None, max_length=1000)
+
+
+def _feedback_client_hash(request: Request) -> str:
+    # Resolve dynamically so feedback and middleware share the canonical helper.
+    # The private-name fallback only supports deployments awaiting its public alias.
+    resolver = getattr(ops_security, "client_ip", None)
+    if resolver is None:
+        resolver = ops_security._client_ip
+    return hashlib.sha256(resolver(request).encode("utf-8")).hexdigest()
 
 
 @router.post("/feedback", status_code=201)
 async def submit_verdict_feedback(
     body: VerdictFeedbackBody,
     request: Request,
+    db: AsyncSession = Depends(get_db_session),
 ) -> dict[str, Any]:
-    """Human-in-the-loop verdict correction.
+    """Anonymous, unverified feedback, not authoritative gold or calibration data.
 
-    AGREE confirms the engine's band; DISAGREE optionally supplies the band
-    the human believes is correct. These labels are the ground truth for the
-    engine's agreement metrics (GET /verdicts/summary) and future calibration.
-    One vote per (claim, client) — re-voting updates the previous vote.
+    One vote per (claim, canonical client IP); re-voting atomically updates it.
+    User-agent/header changes cannot create a different feedback identity.
+    Shared IPs may share a vote; network identity is not a verified person.
     """
-    import hashlib
-
-    from sqlalchemy import func as sa_func
-    from sqlalchemy.dialects.postgresql import insert as pg_insert
-
-    from app.models.evolution import FeedbackVerdict
-
-    async with async_session_maker() as db:
-        claim = (
-            await db.execute(
-                text("SELECT id FROM claims WHERE id = CAST(:cid AS uuid)"),
-                {"cid": body.claim_id},
-            )
-        ).first()
-        if claim is None:
+    try:
+        claim_id = (
+            await db.execute(select(Claim.id).where(Claim.id == body.claim_id))
+        ).scalar_one_or_none()
+        if claim_id is None:
             raise HTTPException(status_code=404, detail="claim not found")
-
-        # stable pseudonymous client identity (no accounts needed to vote)
-        fwd = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
-        ident = fwd or (request.client.host if request.client else "unknown")
-        ua = request.headers.get("user-agent") or ""
-        client_hash = hashlib.sha256(f"{ident}|{ua}".encode()).hexdigest()
-
         stmt = pg_insert(FeedbackVerdict).values(
-            claim_id=claim[0],
-            client_hash=client_hash,
+            claim_id=claim_id,
+            client_hash=_feedback_client_hash(request),
             vote=body.vote,
             corrected_verdict=body.corrected_verdict,
             comment=body.comment,
@@ -365,19 +577,33 @@ async def submit_verdict_feedback(
                 "vote": stmt.excluded.vote,
                 "corrected_verdict": stmt.excluded.corrected_verdict,
                 "comment": stmt.excluded.comment,
-                "created_at": sa_func.now(),
+                "created_at": func.now(),
             },
         )
         await db.execute(stmt)
         await db.commit()
-
-    return {"status": "recorded", "claim_id": body.claim_id, "vote": body.vote}
+    except SQLAlchemyError as exc:
+        await db.rollback()
+        logger.exception("Anonymous verdict feedback could not be stored")
+        raise HTTPException(
+            status_code=503, detail="Feedback storage is unavailable; retry later."
+        ) from exc
+    return {
+        "status": "recorded",
+        "claim_id": str(body.claim_id),
+        "vote": body.vote,
+        "feedback_kind": "anonymous_unverified",
+        "is_ground_truth": False,
+        "warnings": [
+            "Anonymous feedback is unverified, not authoritative gold "
+            "or evidence of verdict accuracy. Shared IPs may share one vote."
+        ],
+    }
 
 
 @router.get("/summary")
 async def verdict_summary() -> dict[str, Any]:
-    """Engine-wide XAI summary: live distribution, full disclosed config,
-    and human agreement metrics (the start of the evaluation loop)."""
+    """Disclosed config, stored-score distribution and unverified vote counts."""
 
     async with async_session_maker() as db:
         dist = (
@@ -411,23 +637,33 @@ async def verdict_summary() -> dict[str, Any]:
     agrees = sum(r[3] for r in fb if r[0] == "AGREE")
     total_fb = sum(r[3] for r in fb)
 
-    # simple agreement metric: AGREE votes / total votes, and for DISAGREE
-    # votes where the human supplied a band != engine band, disagreement is
-    # "confirmed" (the human actually named a different label)
+    # A named alternate band is a reported disagreement, not a verified correction.
+    # Keep the legacy metric key for clients, with an explicit non-gold disclosure.
     confirm_disputes = sum(
-        r[3] for r in fb
-        if r[0] == "DISAGREE" and r[2] and r[1] and r[1] != r[2]
+        r[3] for r in fb if r[0] == "DISAGREE" and r[2] and r[1] and r[1] != r[2]
     )
 
     return {
         "engine_config": engine_config(),
         "distribution": [
-            {"band": r[0] or "UNSCORED", "count": r[1],
-             "avg_probability": round(float(r[2]), 4) if r[2] is not None else None}
+            {
+                "band": r[0] or "UNSCORED",
+                "count": r[1],
+                "avg_probability": round(float(r[2]), 4) if r[2] is not None else None,
+            }
             for r in dist
         ],
         "total_scored": total_scored,
+        "warnings": [
+            "Stored aggregates may include legacy verdicts. Scores are "
+            "uncalibrated heuristics, not probabilities of truth."
+        ],
         "human_feedback": {
+            "feedback_kind": "anonymous_unverified",
+            "is_ground_truth": False,
+            "warning": "Anonymous agreement and named disagreements are unverified "
+            "feedback, not authoritative gold, accuracy or calibration. "
+            "confirmed_disagreements means a reported alternate band only.",
             "total_votes": total_fb,
             "agree": agrees,
             "disagree": total_fb - agrees,
@@ -438,41 +674,46 @@ async def verdict_summary() -> dict[str, Any]:
 
 
 @router.get("/{claim_id}")
-async def verdict_detail(claim_id: str) -> dict[str, Any]:
-    """Full transparency: the claim, its verdict, and EVERY factor."""
-    async with async_session_maker() as db:
+async def verdict_detail(
+    claim_id: UUID,
+    db: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    """Stored evidence and score provenance; reading never triggers rescoring."""
+    try:
         row = (
-            await db.execute(
-                text(
-                    """
-                    SELECT c.id::text AS id, c.claim_text, c.verdict,
-                           c.verdict_probability AS probability,
-                           c.verdict_rationale, c.verdict_evidence,
-                           c.confidence AS extraction_confidence,
-                           a.domain AS outlet, a.title AS article_title,
-                           a.url AS article_url, a.published_at,
-                           COALESCE((SELECT json_agg(json_build_object('text', ce.entity_text, 'type', ce.entity_type))
-                                     FROM claim_entities ce WHERE ce.claim_id = c.id), '[]'::json) AS entities
-                    FROM claims c JOIN articles a ON a.id = c.article_id
-                    WHERE c.id = CAST(:cid AS uuid)
-                    """
-                ),
-                {"cid": claim_id},
+            (
+                await db.execute(
+                    text("""
+            SELECT c.id::text AS id, c.claim_text, c.verdict,
+                   c.verdict_probability AS probability,
+                   c.verdict_rationale, c.verdict_evidence,
+                   c.confidence AS extraction_confidence,
+                   a.domain AS outlet, a.title AS article_title,
+                   a.url AS article_url, a.published_at,
+                   COALESCE((SELECT json_agg(json_build_object('text', ce.entity_text, 'type', ce.entity_type))
+                             FROM claim_entities ce WHERE ce.claim_id = c.id), '[]'::json) AS entities
+            FROM claims c JOIN articles a ON a.id = c.article_id
+            WHERE c.id = CAST(:cid AS uuid)
+        """),
+                    {"cid": str(claim_id)},
+                )
             )
-        ).first()
+            .mappings()
+            .first()
+        )
+    except SQLAlchemyError as exc:
+        logger.exception("Stored verdict detail failed")
+        raise HTTPException(
+            status_code=503, detail="Verdict storage is unavailable; retry later."
+        ) from exc
     if row is None:
         raise HTTPException(status_code=404, detail="claim not found")
-
-    m = dict(row._mapping)
-    try:
-        m["verdict_evidence"] = json.loads(m["verdict_evidence"]) if isinstance(m["verdict_evidence"], str) else m["verdict_evidence"]
-    except Exception:
-        logger.debug("verdict_evidence was not valid JSON — returning raw value")
-        m["verdict_evidence"] = None
-    if m.get("published_at"):
-        m["published_at"] = m["published_at"].isoformat()
-    return m
-
+    item = dict(row)
+    item["verdict_evidence"] = _parse_evidence(item.get("verdict_evidence"))
+    item.update(_score_metadata(item["verdict_evidence"]))
+    if isinstance(item.get("published_at"), datetime):
+        item["published_at"] = item["published_at"].isoformat()
+    return item
 
 
 # ------------------------------------------------------- mutation chains

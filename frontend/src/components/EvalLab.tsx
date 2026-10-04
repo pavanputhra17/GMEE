@@ -1,10 +1,15 @@
 import React, { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ClipboardCheck, Scale, GitBranch, Unlink, ChevronRight } from 'lucide-react';
-import { evalApi, EvalLabel, EvalPair } from '../api/eval';
+import { ClipboardCheck, Scale, GitBranch, Unlink, Download } from 'lucide-react';
+import { evalApi, EvalLabel, EvalPair, type EvalStrategy, type EvalSplit } from '../api/eval';
+import { useSession } from '../lib/session';
+import { usePollingPolicy } from '../lib/polling';
+import { downloadApiResponse } from '../lib/download';
+import { QueryError } from './QueryError';
+import { SignInNotice } from './SignInNotice';
 
 /**
- * EvalLab — the gold-standard labeling workbench.
+ * EvalLab — authenticated, blinded claim-pair labeling.
  *
  * Serves blinded claim pairs (texts + outlets only; similarity scores are
  * withheld by the backend so annotators judge the claims, not the machine)
@@ -46,7 +51,7 @@ const LABEL_META: Array<{
   },
 ];
 
-const ClaimCard: React.FC<{ side: 'A' | 'B'; text: string; domain: string }> = ({
+const ClaimCard: React.FC<{ side: 'A' | 'B'; text: string; domain: string | null }> = ({
   side,
   text,
   domain,
@@ -72,9 +77,11 @@ const PairView: React.FC<{
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (pending || !annotator) return;
-      if ((e.target as HTMLElement)?.tagName === 'INPUT') return;
+      if (e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
+      const target = e.target instanceof HTMLElement ? e.target : null;
+      if (target?.closest('input, textarea, select, [contenteditable="true"], [role="dialog"]')) return;
       const meta = LABEL_META.find((m) => m.key === e.key);
-      if (meta) onLabeled(meta.label);
+      if (meta) { e.preventDefault(); onLabeled(meta.label); }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -120,175 +127,160 @@ const PairView: React.FC<{
 };
 export const EvalLab: React.FC = () => {
   const queryClient = useQueryClient();
-  const [annotator, setAnnotator] = useState<string>(() => evalApi.loadAnnotator());
-  const [draft, setDraft] = useState<string>(() => evalApi.loadAnnotator());
+  const { user, revision } = useSession();
+  const polling = usePollingPolicy(30000);
+  const [strategy, setStrategy] = useState<EvalStrategy>('coverage');
+  const [split, setSplit] = useState<EvalSplit>('unassigned');
+  const [mutationTypes, setMutationTypes] = useState('');
+  const [notes, setNotes] = useState('');
+  const [annotationError, setAnnotationError] = useState('');
+  const [datasetVersion, setDatasetVersion] = useState('');
+  const [publication, setPublication] = useState(false);
   const [justLabeled, setJustLabeled] = useState<EvalLabel | null>(null);
 
-  const name = annotator.trim();
+  const nextKey = ['eval', revision, 'next', strategy, split];
+  const progressKey = ['eval', revision, 'progress'];
   const next = useQuery({
-    queryKey: ['eval', 'next', name],
-    queryFn: () => evalApi.next(name),
-    enabled: name.length > 0,
+    queryKey: nextKey,
+    queryFn: ({ signal }) => evalApi.next(strategy, split, { signal }),
+    enabled: !!user,
+    ...polling,
+    refetchInterval: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
   });
   const progress = useQuery({
-    queryKey: ['eval', 'progress'],
-    queryFn: () => evalApi.progress(),
-    refetchInterval: 30000,
+    queryKey: progressKey,
+    queryFn: ({ signal }) => evalApi.progress({ signal }),
+    enabled: !!user,
+    ...polling,
   });
   const labelMutation = useMutation({
-    mutationFn: ({ pairId, label }: { pairId: string; label: EvalLabel }) =>
-      evalApi.label(pairId, name, label),
-    onSuccess: (_data, vars) => {
+    mutationFn: ({ pairId, label, types, note }: { pairId: string; label: EvalLabel; types: string[]; note: string }) =>
+      evalApi.label(pairId, label, { ...(types.length ? { mutation_types: types } : {}), ...(note ? { notes: note } : {}) }),
+    onSuccess: async (_data, vars) => {
       setJustLabeled(vars.label);
-      queryClient.invalidateQueries({ queryKey: ['eval', 'next', name] });
-      queryClient.invalidateQueries({ queryKey: ['eval', 'progress'] });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: nextKey }),
+        queryClient.invalidateQueries({ queryKey: progressKey }),
+      ]);
     },
+  });
+  const exportMutation = useMutation({
+    mutationFn: () => evalApi.export(datasetVersion.trim(), publication),
+    onSuccess: downloadApiResponse,
   });
 
   const latestPairId = next.data?.pair?.pair_id;
   useEffect(() => {
-    if (latestPairId) setJustLabeled(null);
-  }, [latestPairId]);
+    setJustLabeled(null);
+    setMutationTypes('');
+    setNotes('');
+    setAnnotationError('');
+  }, [latestPairId, revision, strategy, split]);
 
-  const claimName = () => {
-    const v = draft.trim();
-    if (!v) return;
-    setAnnotator(v);
-    evalApi.saveAnnotator(v);
-  };
-
-  const labeled = progress.data?.labeled_pairs_distinct ?? 0;
-  const total = progress.data?.total_pairs ?? 0;
   const pair = next.data?.pair ?? null;
   const castVote = (label: EvalLabel) => {
-    if (pair) labelMutation.mutate({ pairId: pair.pair_id, label });
+    if (!pair || !user || labelMutation.isPending || next.isFetching || justLabeled) return;
+    const types = [...new Set(mutationTypes.split(',').map((value) => value.trim()).filter(Boolean))];
+    if (types.length > 16 || types.some((type) => type.length > 64)) {
+      setAnnotationError('Use at most 16 mutation types, each at most 64 characters.');
+      return;
+    }
+    setAnnotationError('');
+    labelMutation.mutate({ pairId: pair.pair_id, label, types, note: notes.trim() });
   };
 
   return (
     <section className="card-brutal-dark p-6 flex flex-col gap-5">
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 pb-4 border-b border-hermes-bone/12">
-        <div className="flex items-center gap-2">
-          <ClipboardCheck className="w-5 h-5" />
-          <h2 className="text-2xl font-display">Eval Lab</h2>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="chip-brutal border-hermes-bone/25 text-hermes-bone/60">
-            {total > 0 ? `${labeled.toLocaleString()} / ${total.toLocaleString()} labeled` : 'coverage —'}
-          </span>
-          {progress.data && progress.data.inter_annotator.length > 0 && (
-            <span className="chip-brutal border-emerald-400/40 text-emerald-300">
-              kappa {progress.data.inter_annotator[0].kappa.toFixed(2)}
-            </span>
-          )}
-        </div>
+        <div className="flex items-center gap-2"><ClipboardCheck className="w-5 h-5" /><h2 className="text-2xl font-display">Eval Lab</h2></div>
+        {user && <span className="chip-brutal border-hermes-bone/25 text-hermes-bone/60">
+          {progress.data ? `${progress.data.labeled_pairs_distinct.toLocaleString()} / ${progress.data.total_pairs.toLocaleString()} labeled` : progress.isLoading ? 'Loading coverage…' : 'Coverage unavailable'}
+        </span>}
       </div>
-
-      <p className="font-mono text-[11px] leading-relaxed text-hermes-bone/50 border-l-2 border-hermes-bone/25 pl-3">
-        Blinded by design: the backend withholds similarity scores, buckets and engine
-        verdicts — judge only the two claim texts. Keys 1 / 2 / 3 vote.
+      <p className="font-mono text-[11px] leading-relaxed text-hermes-bone/55 border-l-2 border-hermes-bone/25 pl-3">
+        Blinded by design: pair scores and engine verdicts are withheld. Judge the claim texts, not the machine. Keys 1 / 2 / 3 vote outside form fields. Agreement does not establish correctness or benchmark validity.
       </p>
-
-      <div className="flex flex-col sm:flex-row gap-2 sm:items-center">
-        <label htmlFor="eval-annotator" className="font-mono text-[11px] uppercase tracking-widest text-hermes-bone/55 shrink-0">
-          Annotator
-        </label>
-        <input
-          id="eval-annotator"
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && claimName()}
-          placeholder="your handle, e.g. pavan"
-          maxLength={64}
-          className="bg-hermes-panel-deep border border-hermes-bone/25 px-3 py-2 text-sm font-mono text-hermes-bone placeholder:text-hermes-bone/30 outline-none focus:border-hermes-bone/60 flex-1"
-        />
-        <button onClick={claimName} className="btn-brutal !py-2 flex items-center gap-1">
-          {name ? 'Switch' : 'Start'} <ChevronRight className="w-4 h-4" />
-        </button>
-      </div>
-
-      {!name ? (
-        <p className="font-mono text-xs text-hermes-bone/50 border border-dashed border-hermes-bone/20 p-3">
-          Enter an annotator handle to pull your first blinded pair.
-        </p>
-      ) : next.isLoading ? (
-        <div className="space-y-2" data-testid="eval-skeleton">
-          <div className="shimmer h-32" />
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-            {[0, 1, 2].map((i) => (
-              <div key={i} className="shimmer h-24" />
-            ))}
+      {!user ? <SignInNotice feature="Eval Lab" /> : <>
+        <p className="text-xs font-mono">Authenticated annotator: {user.full_name || user.email}. Labels are bound to your account ID by the server.</p>
+        <div className="flex flex-wrap gap-4">
+          <div><label htmlFor="eval-strategy" className="block text-xs font-mono mb-1">Sampling strategy</label>
+            <select id="eval-strategy" value={strategy} disabled={labelMutation.isPending} onChange={(event) => {
+              const value = event.target.value as EvalStrategy;
+              setStrategy(value);
+              if (value === 'uncertainty') setSplit('train');
+              labelMutation.reset();
+            }} className="field-brutal">
+              <option value="coverage">Coverage</option><option value="uncertainty">Uncertainty (train only)</option>
+            </select>
+          </div>
+          <div><label htmlFor="eval-split" className="block text-xs font-mono mb-1">Dataset split</label>
+            <select id="eval-split" value={split} disabled={labelMutation.isPending || strategy === 'uncertainty'} onChange={(event) => { setSplit(event.target.value as EvalSplit); labelMutation.reset(); }} className="field-brutal">
+              <option value="unassigned">Unassigned</option><option value="train">Train</option><option value="dev">Dev</option><option value="test">Test</option>
+            </select>
           </div>
         </div>
-      ) : next.isError ? (
-        <p className="font-mono text-xs text-hermes-bone/50 border border-dashed border-hermes-bone/20 p-3">
-          Eval backend unreachable — labeling resumes as soon as the API answers. No
-          pairs are fabricated.
-        </p>
-      ) : !pair ? (
-        <p className="font-mono text-xs text-emerald-300 border border-emerald-400/30 bg-emerald-400/5 p-3">
-          Done — you have labeled every pair in the gold set{name ? `, ${name}` : ''}.
-        </p>
-      ) : labelMutation.isError ? (
-        <div className="flex flex-col gap-4">
-          <p className="font-mono text-xs text-hermes-red-bright border border-hermes-red-bright/40 bg-hermes-red-bright/5 p-3">
-            Vote failed to record — the backend rejected it. Your pair is preserved below;
-            retry once the API recovers.
-          </p>
-          <PairView
-            pair={pair}
-            annotator={name}
-            onLabeled={castVote}
-            pending={labelMutation.isPending}
-            justLabeled={null}
-          />
-        </div>
-      ) : (
-        <PairView
-          pair={pair}
-          annotator={name}
-          onLabeled={castVote}
-          pending={labelMutation.isPending}
-          justLabeled={justLabeled}
-        />
-      )}
-
-      {progress.data && (
-        <div className="border-t border-hermes-bone/12 pt-4 flex flex-col gap-3">
-          <div className="font-mono text-[10px] uppercase tracking-widest text-hermes-bone/45">
-            Coverage by similarity bucket
-          </div>
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2">
-            {progress.data.by_bucket.map((b) => (
-              <div key={b.bucket} className="border border-hermes-bone/12 bg-hermes-panel-deep px-2.5 py-2">
-                <div className="font-mono text-[10px] text-hermes-bone/45">{b.bucket}</div>
-                <div className="text-sm font-display tabular-nums">
-                  {b.labeled.toLocaleString()}
-                  <span className="text-hermes-bone/40"> / {b.pairs.toLocaleString()}</span>
-                </div>
-                <div className="h-1 mt-1.5 bg-hermes-bone/10">
-                  <div
-                    className="h-full bg-hermes-bone/60"
-                    style={{ width: `${b.pairs ? Math.min(100, (b.labeled / b.pairs) * 100) : 0}%` }}
-                  />
-                </div>
+        {strategy === 'uncertainty' && <p className="text-xs text-amber-300">Training pairs only: uncertainty is heuristic score proximity, not calibrated probability entropy. Held-out splits retain fixed coverage order.</p>}
+        {next.isLoading ? <div role="status" className="space-y-2" data-testid="eval-skeleton"><span className="text-xs font-mono">Loading blinded pair…</span><div className="shimmer h-32" /></div>
+          : next.isError ? <QueryError title="Eval pairs unavailable" error={next.error} onRetry={() => next.refetch()} retrying={next.isFetching} />
+          : !pair ? <p className="font-mono text-xs border border-dashed border-hermes-bone/25 p-3">
+            {next.data?.done ? progress.data?.total_pairs === 0 ? 'No evaluation pairs available. Nothing has been fabricated.' : 'No remaining pairs in the selected split for this account.' : 'The API returned no pair. No completion is inferred.'}
+          </p> : <>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div><label htmlFor="eval-mutation-types" className="block text-xs font-mono mb-1">Mutation types (optional, comma-separated)</label>
+                <input id="eval-mutation-types" value={mutationTypes} maxLength={1040} disabled={labelMutation.isPending || !!justLabeled} onChange={(event) => setMutationTypes(event.target.value)} className="field-brutal w-full" />
               </div>
-            ))}
-          </div>
-          {progress.data.inter_annotator.length > 0 ? (
-            <div className="flex flex-wrap gap-2">
-              {progress.data.inter_annotator.map((k) => (
-                <span key={k.annotators.join('+')} className="chip-brutal border-hermes-bone/25 text-hermes-bone/60">
-                  kappa {k.annotators.join(' x ')}: {k.kappa.toFixed(3)} (n={k.pairs})
-                </span>
-              ))}
+              <div><label htmlFor="eval-notes" className="block text-xs font-mono mb-1">Notes (optional)</label>
+                <textarea id="eval-notes" rows={2} maxLength={2000} value={notes} disabled={labelMutation.isPending || !!justLabeled} onChange={(event) => setNotes(event.target.value)} className="field-brutal w-full" />
+              </div>
             </div>
-          ) : (
-            <p className="font-mono text-[10px] text-hermes-bone/40">
-              No kappa yet — two annotators need at least 5 shared pairs before agreement is meaningful.
-            </p>
-          )}
-        </div>
-      )}
+            {annotationError && <p role="alert" className="text-xs text-hermes-red-bright">{annotationError}</p>}
+            {labelMutation.isError && <QueryError title="Vote failed to record; the pair is preserved" error={labelMutation.error} onRetry={() => { if (labelMutation.variables) labelMutation.mutate(labelMutation.variables); }} retrying={labelMutation.isPending} />}
+            <PairView pair={pair} annotator={user.id} onLabeled={castVote} pending={labelMutation.isPending || next.isFetching || !!justLabeled} justLabeled={justLabeled} />
+          </>}
+
+        {progress.isLoading && <p role="status" className="text-xs font-mono">Loading evaluation progress…</p>}
+        {progress.isError && <><QueryError title="Eval progress unavailable" error={progress.error} onRetry={() => progress.refetch()} retrying={progress.isFetching} />
+          {progress.data && <p className="text-xs text-amber-300">Last real progress is shown below; it may be stale.</p>}
+        </>}
+        {progress.data && <div className="border-t border-hermes-bone/12 pt-4 flex flex-col gap-4">
+          <h3 className="font-mono text-xs text-hermes-bone/65">Coverage by similarity bucket</h3>
+          {progress.data.by_bucket.length === 0 && <p className="text-xs font-mono text-hermes-bone/55">No evaluation buckets available.</p>}
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2">
+            {progress.data.by_bucket.map((bucket) => <div key={bucket.bucket} className="border border-hermes-bone/12 bg-hermes-panel-deep px-2.5 py-2">
+              <div className="font-mono text-[10px] text-hermes-bone/45">{bucket.bucket}</div>
+              <div className="text-sm font-display tabular-nums">{bucket.labeled.toLocaleString()}<span className="text-hermes-bone/40"> / {bucket.pairs.toLocaleString()}</span></div>
+              <div className="h-1 mt-1.5 bg-hermes-bone/10"><div className="h-full bg-hermes-bone/60" style={{ width: `${bucket.pairs ? Math.min(100, (bucket.labeled / bucket.pairs) * 100) : 0}%` }} /></div>
+            </div>)}
+          </div>
+          <h3 className="font-mono text-xs text-hermes-bone/65">Label origins</h3>
+          {progress.data.origins ? <dl className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            {Object.entries(progress.data.origins).map(([origin, counts]) => <div key={origin} className="border border-hermes-bone/15 p-3 text-xs font-mono">
+              <dt>{origin}</dt><dd>{counts.votes} votes · {counts.pairs} pairs</dd>
+            </div>)}
+          </dl> : <p className="text-xs text-hermes-bone/55">Label origin breakdown is not reported by this API version.</p>}
+          <p className="text-xs text-amber-300">Automatic, legacy and test labels are not independent human gold. Coverage and agreement are descriptive, not a validated benchmark.</p>
+          {progress.data.warning && <p role="note" className="text-xs text-amber-300">{progress.data.warning}</p>}
+          {progress.data.warnings?.map((warning, index) => <p key={index} role="note" className="text-xs text-amber-300">{warning}</p>)}
+          {progress.data.inter_annotator.length > 0 ? <div className="space-y-2">
+            {progress.data.inter_annotator.map((agreement) => <div key={agreement.annotators.join('+')} className="text-xs font-mono">
+              <p>kappa {agreement.annotators.join(' × ')}: {agreement.kappa == null ? 'not estimable' : agreement.kappa.toFixed(3)} (n={agreement.pairs})</p>
+              {agreement.warning && <p className="text-amber-300">{agreement.warning}</p>}
+            </div>)}
+          </div> : <p className="text-xs text-hermes-bone/55">No inter-annotator agreement returned yet.</p>}
+        </div>}
+        {user.role.toLowerCase() === 'admin' && <div className="border-t border-hermes-bone/15 pt-4 space-y-3">
+          <h3 className="font-display text-xl">Admin dataset export</h3>
+          <p className="text-xs text-hermes-bone/60">Downloads the actual /eval/export response, including provenance. No benchmark records or charts are generated in the browser.</p>
+          <label htmlFor="eval-dataset-version" className="block text-xs font-mono">Dataset version</label>
+          <input id="eval-dataset-version" maxLength={128} value={datasetVersion} disabled={exportMutation.isPending} onChange={(event) => { setDatasetVersion(event.target.value); exportMutation.reset(); }} className="field-brutal w-full" />
+          <label className="flex items-center gap-2 text-xs font-mono"><input type="checkbox" checked={publication} disabled={exportMutation.isPending} onChange={(event) => setPublication(event.target.checked)} /> Publication mode (human-only; server validates eligibility)</label>
+          <button type="button" disabled={exportMutation.isPending || !datasetVersion.trim()} onClick={() => exportMutation.mutate()} className="btn-brutal"><Download className="w-3.5 h-3.5" /> {exportMutation.isPending ? 'Downloading export…' : 'Download actual export'}</button>
+          {exportMutation.isError && <QueryError title="Eval export unavailable" error={exportMutation.error} onRetry={() => exportMutation.mutate()} retrying={exportMutation.isPending} />}
+          {exportMutation.isSuccess && <p role="status" className="text-xs font-mono">Export response downloaded.</p>}
+        </div>}
+      </>}
     </section>
   );
 };

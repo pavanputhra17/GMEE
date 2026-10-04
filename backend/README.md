@@ -1,159 +1,172 @@
-# GMEE Backend Service & Pipeline Engine
+# GMEE Backend & Pipeline Engine
 
-The backend for the **Global Misinformation Early-Warning Engine (GMEE)** is a high-performance FastAPI service delivering real-time factual claim extraction, Bayesian credibility scoring, temporal narrative mutation tracking, and graph topology streaming.
+FastAPI/SQLAlchemy/Alembic service for the **Global Misinformation Evolution
+Engine**. It collects attributable articles, extracts claims, searches a local
+corpus, describes typed text changes and exposes operational/evaluation controls.
+It is a research prototype: corpus agreement is not truth, inferred graph edges
+are not observed copying, and scientific experiments remain **UNPERFORMED**.
 
----
+See [system architecture](../ARCHITECTURE.md), [API](../docs/API.md),
+[Operations](../docs/OPERATIONS.md), [Audit](../docs/AUDIT.md) and
+[Research](../docs/RESEARCH.md) for rationale and release gates.
 
-## Architecture & Technology Stack
+## Stack and source map
 
-- **Framework:** FastAPI / Starlette / Uvicorn (Python 3.11+)
-- **Primary Database:** PostgreSQL 16 + `pgvector` (Vector similarity search via HNSW cosine index)
-- **Graph Database:** Neo4j 5.20+ Community / Enterprise (Propagation topologies, scoop races, timeline cascades)
-- **In-Memory Cache & Lock:** Redis 7 (Distributed scheduler leader locks, rate limiting, token blocklists)
-- **NLP & Inference:**
-  - `sentence-transformers/all-mpnet-base-v2` (768-D normalized embeddings)
-  - `google/flan-t5-base` (Cross-domain NLI entailment / contradiction stance scoring)
-  - `spaCy` `en_core_web_sm` (Named Entity Recognition for epistemic grounding)
-  - Anthropic Claude / OpenAI GPT / HuggingFace local fallback for LLM claim extraction
+- Python 3.11+, FastAPI/Starlette/Uvicorn, async SQLAlchemy 2 and Alembic
+- PostgreSQL 16 + pgvector as authoritative storage; Neo4j graph projection;
+  Redis for security/coordination state
+- all-mpnet-base-v2 (768-d) retrieval, spaCy `en_core_web_sm`, local stance/
+  extraction models and optional configured providers; record exact revisions
+  before a reproducible evaluation
 
----
+| Path | Role |
+|------|------|
+| `app/api/v1/` | Auth, health, corpus, verdicts, graph, eval, alerts and pipeline/operations contracts |
+| `app/core/` | Settings, security, scheduler and ownership/limiting behavior |
+| `app/db/`, `app/models/`, `app/repositories/` | Async clients, relational source of truth and data access |
+| `app/services/` | Collection/preprocessing/NLP, typed changes, local evidence and eval |
+| `alembic/` | Schema migration history; authoritative field/index definitions |
+| `scripts/` | Operator batch/evaluation tools and safe database backup helper |
+| `tests/` | Mocked/SQLite unit tests and required real-pgvector integration |
 
-## Directory Structure
-
-```
-backend/
-├── alembic/                 # Database migrations (PostgreSQL + pgvector)
-├── app/
-│   ├── ai/                  # LLM and embedding client abstractions
-│   ├── api/                 # REST endpoints under /api/v1
-│   │   ├── alerts.py        # Early-warning surge and spike notifications
-│   │   ├── auth.py          # JWT authentication, session handling
-│   │   ├── collection.py    # Multi-source ingest management
-│   │   ├── corpus.py        # Searchable corpus and semantic queries
-│   │   ├── dashboard.py     # Aggregated operational telemetry
-│   │   ├── eval.py          # Gold-standard evaluation & active labeling
-│   │   ├── evolution.py     # Topic clustering & mutation runs
-│   │   ├── graph.py         # Subgraphs, scoops, simulations
-│   │   ├── health.py        # Liveness & multi-service readiness
-│   │   ├── lineage.py       # Claim evolutionary mutation chains & diffs
-│   │   ├── nlp.py           # NLP extraction triggers
-│   │   ├── preprocessing.py # Text cleanup & language filtering
-│   │   └── verdicts.py      # Probabilistic fact checking & feedback
-│   ├── core/                # Config, security, scheduler, rate limits
-│   ├── db/                  # Async session factories (Postgres, Neo4j, Redis)
-│   ├── models/              # SQLAlchemy 2.0 async ORM models
-│   ├── repositories/        # Database access patterns
-│   ├── schemas/             # Pydantic v2 validation contracts
-│   └── services/            # Domain logic (verdicts, nlp, evolution, eval)
-├── pyproject.toml           # Dependencies and tool configurations
-├── scripts/                 # Maintenance, batch inference & eval scripts
-└── tests/                   # Pytest test suite (unit and integration)
-```
-
-
----
-
-## Local Setup & Development
-
-### 1. Python Environment
-Requires Python 3.11+.
+## Local setup (operator actions)
 
 ```bash
 cd backend
 python -m venv .venv
-
-# Windows
-.\.venv\Scripts\Activate.ps1
-# Linux / macOS
-source .venv/bin/activate
-
-pip install -e ".[dev]"
+# POSIX: source .venv/bin/activate
+# Windows PowerShell: .\.venv\Scripts\Activate.ps1
+python -m pip install -e ".[dev]"
 ```
 
-### 2. Environment Variables
-Create a local `.env` file or export variables:
+Configure private environment locally; never print or commit secrets. Runtime
+Compose uses root `.env` derived from `infra/runtime.env.example`; it is required
+and supplies in-network datastore URLs. Host-local execution instead requires
+`POSTGRES_URL` with loopback/dev PostgreSQL port 55432, Neo4j loopback port 7687,
+Redis loopback port 6379, `CORS_ORIGINS`, unique JWT secret (at least 32 chars),
+and actual datastore credentials. Initialization-variable changes do not rotate
+credentials in existing volumes. Start with `ENABLE_SCHEDULER=false` until
+providers, migrations and job safety have been reviewed.
 
-```ini
-POSTGRES_URL=postgresql+asyncpg://postgres:postgres@localhost:55432/gmee
-NEO4J_URI=bolt://localhost:7687
-NEO4J_USER=neo4j
-NEO4J_PASSWORD=password
-REDIS_URL=redis://localhost:6379/0
-JWT_SECRET=supersecretjwtstringwithatleast32chars
-ENVIRONMENT=development
-ENABLE_SCHEDULER=true
-```
-
-### 3. Database Migrations (Alembic)
-Apply all PostgreSQL schema migrations:
+Apply schema before serving the local process:
 
 ```bash
 alembic upgrade head
+uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
-To verify the current migration head:
+Local Swagger/ReDoc/OpenAPI: `/docs`, `/redoc`, `/openapi.json`. Liveness:
+`/api/v1/health`; readiness: `/api/v1/health/ready` (all stores must be OK).
+A successful liveness response is not readiness or loaded-model availability.
+
+## Container deployment
+
+From repository root:
 
 ```bash
-alembic current
+# Local host tools only; datastore/API ports bind to loopback.
+docker compose --env-file .env -f infra/docker-compose.yml -f infra/docker-compose.dev.yml up -d --build
+# Base deployment: datastore/API host ports absent, SPA on loopback for a TLS gateway.
+docker compose --env-file .env -f infra/docker-compose.yml up -d --build
 ```
 
----
+Production Docker CMD runs `alembic upgrade head && exec uvicorn ... --workers 1`.
+A migration failure stops startup; no source bind mount overwrites the image.
+One worker avoids duplicate model RAM; the app owns lazy initialization and the
+non-root user has a writable model cache. Lazy first use may require model
+network downloads and warm-up. In a future replicated deployment, run one
+coordinated migration phase before API replicas rather than racing per-replica
+DDL. Do not stamp head or remove historical data to force an upgrade through.
 
-## Running the Service
+`gmee01` adds typed edge evidence/one-parent integrity, `gmee02` adds authenticated
+label origin/history and split/event identity, and main's `gmee03` adds durable
+pipeline ownership/jobs. Review a restored isolated snapshot before applying
+these to existing data. Full instructions: [upgrade runbook](../docs/OPERATIONS.md).
 
-Start the local FastAPI development server:
+## API and epistemic contracts
+
+- Registration returns the existing token pair and assigns role `user`.
+  Login/refresh return bearer credentials; `/auth/me` requires current auth.
+  Public registration cannot make an admin.
+- Authenticated `POST /verdicts/check` accepts bounded `claim_text`, optional
+  ISO `as_of` and evidence `limit`; searches the **stored local corpus**, returns
+  article/claim citations, passages, stance, syndication grouping, warnings and
+  `INSUFFICIENT_EVIDENCE` when appropriate. Missing evidence is not falsity.
+- Authenticated `POST /graph/mutation/compare` accepts `older_text`, `newer_text`
+  and optional timestamps; returns typed changes/spans/version and
+  `observed_propagation: false`. It does not persist synthetic scientific data.
+- `/eval/next`, `/eval/label`, `/eval/progress` require auth. Annotator identity
+  is server-controlled; human/automatic/legacy/test origins and revisions are
+  separate. Exports/split assignment/reports require admin; do not label fixtures
+  or automated guesses as human gold.
+- Pipeline triggers and durable jobs/recovery/metrics are admin-only. Redis
+  election alone is not an exactly-once guarantee; check final mounted contracts
+  and concurrency tests before enabling public/high-availability operations.
+- Raw cosine and live verdict fields are uncalibrated heuristics unless a
+  versioned, human-held-out calibration experiment explicitly establishes the
+  target. Claim relatedness calibration would still not be truth calibration.
+
+The main agent regenerates `docs/openapi.json`; a checked-in snapshot must be
+reconciled with source/client docs before release, not hand-edited here.
+
+## Tests and quality gates
 
 ```bash
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+# From backend, with dev dependencies installed:
+ruff check app tests scripts
+mypy app tests scripts
+pytest -m "not integration" --strict-markers --cov=app --cov-fail-under=70
 ```
 
-- Swagger UI: `http://localhost:8000/docs`
-- ReDoc: `http://localhost:8000/redoc`
-- OpenAPI JSON: `http://localhost:8000/openapi.json`
-- Health readiness: `http://localhost:8000/api/v1/health/ready`
+Unit tests use SQLite shims and mocks; they cannot prove pgvector SQL/index,
+PostgreSQL constraints, migrations or multi-worker lease behavior. Integration
+must target an explicitly disposable PostgreSQL+pgvector database, never a live
+scientific corpus. CI supplies and migrates that service, then:
 
----
-
-## Testing & Quality Gates
-
-The backend enforces strict type checking (`mypy`), linting (`ruff`), unit test suites, integration tests on `pgvector`, and test coverage gates ($\ge 70\%$).
-
-### Run Unit Tests
 ```bash
-pytest
+pytest tests/integration -m integration -o addopts='' --strict-markers --junitxml=integration-results.xml
+python ../infra/scripts/require_integration_results.py integration-results.xml
 ```
 
-### Run Integration Tests (Requires live PostgreSQL + pgvector)
+CI sets `CI=true`/required-integration mode and rejects connectivity failures,
+missing/empty reports and **any skipped integration case**. The final guard is
+independent of optional-local-skip behavior. Backend coverage gate is 70%.
+
+Dedicated container unit tests (root commands):
+
 ```bash
-pytest -m integration tests/integration/
+docker compose --env-file infra/fixture.env -f infra/docker-compose.test.yml run --rm --build backend-tests
+docker compose --env-file infra/fixture.env -f infra/docker-compose.test.yml run --rm --build frontend-tests
 ```
 
-### Run Coverage Checks
-```bash
-pytest --cov=app --cov-report=term-missing --cov-fail-under=70
-```
+The Node test target is separate from nginx runtime. Deployment CI also checks
+Compose/proxy/Render policies, parses PowerShell and runs bounded real **HTTP**
+smoke in tmpfs fixtures, including auth/readiness/empty corpus and typed comparison.
+No evaluation labels, feedback or authorized triggers are written by smoke.
+This is not browser E2E or an accuracy/performance benchmark.
 
-### Run Static Analysis
-```bash
-ruff check app tests
-mypy app tests
-```
+## Evaluation and historical artifacts
 
----
+[Evaluation](../docs/EVALUATION.md) preserves the sampling/automatic diagnostic
+workflow, with an explicit weak-label interpretation. Existing
+`eval_report.json` / `eval_publication_report.md` are exploratory artifacts,
+not publication-ready independently annotated results. Do not run sampling or
+automatic labeling against a live dataset as a verification sweep.
 
-## Evaluation Harness Execution
+The scientific protocol requires separately reviewed authenticated human labels,
+curated event identity, frozen train/dev/test records, train-fitted methods,
+dev-selected calibration/thresholds, untouched test analysis, independent mutation
+gold, licensed snapshots and reproducibility manifests. The presence of a harness
+or a passing toy test does not mean those experiments occurred. See
+[Research](../docs/RESEARCH.md) for hypotheses/baselines/ablations and the
+**UNPERFORMED** ledger.
 
-GMEE ships a scientifically grounded benchmarking harness comparing SBERT vector retrieval against TF-IDF:
+## Backup and recovery
 
-1. **Sample Stratified Pairs for Labeling:**
-   ```bash
-   python scripts/sample_eval_pairs.py 50 1500
-   ```
-2. **Label Pairs in Dashboard:**
-   Open the **Eval Lab** tab (`#/dashboard/eval`) and label pairs blinded.
-3. **Execute Evaluation Runner:**
-   ```bash
-   python scripts/run_eval.py
-   ```
-   Outputs metric tables (AUROC, 95% bootstrap CI, best-F1, Brier score, ECE, McNemar p-value) and persists results to `eval_report.json`.
-
+`scripts/backup_database.py` is a bounded, non-overwriting custom `pg_dump`
+wrapper. It never loads `.env`, puts credentials in command arguments or logs
+stderr. Configure a compatible client and secure process/libpq credentials; it
+creates sensitive plaintext archives, not encrypted or restore-verified backups.
+Use [Operations](../docs/OPERATIONS.md) for isolated restore procedures, retention,
+Windows ACLs and Neo4j/Redis recovery boundaries. No live backup/restore was run
+as part of this infrastructure validation.

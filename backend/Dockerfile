@@ -1,24 +1,36 @@
-FROM python:3.11-slim
+FROM python:3.11-slim AS base
 
-ENV PYTHONUNBUFFERED=1
-ENV PYTHONDONTWRITEBYTECODE=1
-
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-COPY . .
-
-RUN pip install --upgrade pip && \
-    pip install --no-cache-dir -e . && \
+COPY pyproject.toml README.md alembic.ini ./
+COPY app ./app
+COPY alembic ./alembic
+COPY scripts ./scripts
+RUN python -m pip install --upgrade pip && \
+    python -m pip install -e . && \
     python -m spacy download en_core_web_sm
 
+# Tests run in a Python image with dev dependencies, never in the runtime SPA.
+FROM base AS test
+RUN python -m pip install '.[dev]'
+COPY tests ./tests
+CMD ["pytest", "-m", "not integration", "--strict-markers"]
+
+FROM base AS production
+RUN useradd --create-home --uid 10001 gmee && \
+    mkdir -p /home/gmee/.cache && \
+    chown -R gmee:gmee /app /home/gmee
+USER gmee
+ENV HOME=/home/gmee
 EXPOSE 8000
 
-# Production: no --reload, 2 workers for free tier, bind to PORT env var.
-# JSON form (with sh -c) keeps BuildKit's JSONArgsRecommended check green
-# while still expanding ${PORT:-8000} at container start.
-CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 2"]
-
+# Fail closed on migration errors; one worker avoids duplicate ML weights.
+# Uvicorn trusts only an explicitly configured proxy peer (loopback by default).
+CMD ["sh", "-c", "alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port \"${PORT:-8000}\" --workers 1 --proxy-headers --forwarded-allow-ips \"${FORWARDED_ALLOW_IPS:-127.0.0.1}\""]

@@ -15,6 +15,7 @@ from app.models.evolution import (
     RelationshipTypeEnum,
 )
 from app.models.source import Source
+from app.services.evolution.cluster_service import CLUSTERING_ALGORITHM_VERSION
 from app.services.evolution.mutation_detector import MutationDetector
 from app.services.evolution.neo4j_writer import Neo4jWriter
 from app.services.evolution.orchestrator import EvolutionOrchestrator
@@ -43,16 +44,18 @@ def _mutation_fixtures() -> _MutationFixture:
     c1 vs c0 ≈ 0.994 and c2 vs c1 ≈ 0.861 clear the 0.85 EVOLVED_FROM bar;
     c2 vs c0 ≈ 0.80 lands in the SIMILAR_TO window; c3 matches nothing.
     """
-    t0 = datetime.now(UTC) - timedelta(days=2)
-    t1 = datetime.now(UTC) - timedelta(days=1)
-
-    art0 = Article(id=uuid.uuid4(), published_at=t0)
-    art1 = Article(id=uuid.uuid4(), published_at=t1)
-
-    c0 = Claim(id=uuid.uuid4(), article_id=art0.id, extracted_at=t0, embedding=[1.0, 0.0, 0.0])
-    c1 = Claim(id=uuid.uuid4(), article_id=art1.id, extracted_at=t1, embedding=[0.9, 0.1, 0.0])
-    c2 = Claim(id=uuid.uuid4(), article_id=art1.id, extracted_at=t1, embedding=[0.8, 0.6, 0.0])
-    c3 = Claim(id=uuid.uuid4(), article_id=art1.id, extracted_at=t1, embedding=[0.0, 1.0, 0.0])
+    t0 = datetime(2026, 9, 20, tzinfo=UTC)
+    t1, t2, t3 = [t0 + timedelta(days=i) for i in (1, 2, 3)]
+    art0, art1, art2, art3 = [
+        Article(id=uuid.uuid4(), published_at=t) for t in (t0, t1, t2, t3)
+    ]
+    # Meaningful changes in different, strictly time-ordered articles are
+    # required. The previous fixture accidentally asserted same-article and
+    # equal-time claims could establish a mutation parent.
+    c0 = Claim(id=uuid.uuid4(), article_id=art0.id, claim_text="Workers found 12 survivors.", extracted_at=t0, embedding=[1.0, 0.0, 0.0])
+    c1 = Claim(id=uuid.uuid4(), article_id=art1.id, claim_text="Workers found 18 survivors.", extracted_at=t1, embedding=[0.9, 0.1, 0.0])
+    c2 = Claim(id=uuid.uuid4(), article_id=art2.id, claim_text="Workers found 30 survivors.", extracted_at=t2, embedding=[0.8, 0.6, 0.0])
+    c3 = Claim(id=uuid.uuid4(), article_id=art3.id, claim_text="A different event occurred.", extracted_at=t3, embedding=[0.0, 1.0, 0.0])
 
     assignments = [
         ClaimClusterAssignment(claim_id=c0.id, topic_id=1),
@@ -61,7 +64,7 @@ def _mutation_fixtures() -> _MutationFixture:
         ClaimClusterAssignment(claim_id=c3.id, topic_id=1),
     ]
     claims_by_id = {c.id: c for c in (c0, c1, c2, c3)}
-    articles_by_id = {a.id: a for a in (art0, art1)}
+    articles_by_id = {a.id: a for a in (art0, art1, art2, art3)}
     return _MutationFixture(
         c0, c1, c2, c3, assignments, claims_by_id, articles_by_id
     )
@@ -87,7 +90,10 @@ async def test_orchestrator_guards():
     # 2. Test debounce guard
     mock_db.scalar.side_effect = [
         40,  # total claims > 30 (passes corpus check)
-        ClaimClusterRun(claims_in_corpus=35, run_at=datetime.now(UTC))  # last run claims
+        ClaimClusterRun(
+                    claims_in_corpus=35, run_at=datetime.now(UTC),
+                    algorithm_params={"algorithm_version": CLUSTERING_ALGORITHM_VERSION},
+                )  # current algorithm: debounce is safe
     ]
     # new claims = 40 - 35 = 5 (less than 10 threshold)
     res = await orchestrator.run_evolution_cycle(mock_db)
@@ -137,28 +143,11 @@ async def test_mutation_detector_logic():
     # No persisted edges yet: the detector pre-loads existing rows to upsert.
     mock_db.execute = AsyncMock(return_value=_result([]))
     mock_db.add_all = MagicMock()
-    t0 = datetime.now(UTC) - timedelta(days=2)
-    t1 = datetime.now(UTC) - timedelta(days=1)
-    
-    art0 = Article(id=uuid.uuid4(), published_at=t0)
-    art1 = Article(id=uuid.uuid4(), published_at=t1)
-
-    c0 = Claim(id=uuid.uuid4(), article_id=art0.id, extracted_at=t0, embedding=[1.0, 0.0, 0.0])
-    c1 = Claim(id=uuid.uuid4(), article_id=art1.id, extracted_at=t1, embedding=[0.9, 0.1, 0.0])  # high sim
-    c2 = Claim(id=uuid.uuid4(), article_id=art1.id, extracted_at=t1, embedding=[0.8, 0.6, 0.0])  # medium sim
-    c3 = Claim(id=uuid.uuid4(), article_id=art1.id, extracted_at=t1, embedding=[0.0, 1.0, 0.0])  # low sim
-
-    assignments = [
-        ClaimClusterAssignment(claim_id=c0.id, topic_id=1),
-        ClaimClusterAssignment(claim_id=c1.id, topic_id=1),
-        ClaimClusterAssignment(claim_id=c2.id, topic_id=1),
-        ClaimClusterAssignment(claim_id=c3.id, topic_id=1),
-    ]
-
-    claims_by_id = {c.id: c for c in [c0, c1, c2, c3]}
-    articles_by_id = {a.id: a for a in [art0, art1]}
-
-    relationships = await detector.run_mutation_detection(mock_db, assignments, claims_by_id, articles_by_id)
+    fx = _mutation_fixtures()
+    c0, c1, c2 = fx.c0, fx.c1, fx.c2
+    relationships = await detector.run_mutation_detection(
+        mock_db, fx.assignments, fx.claims_by_id, fx.articles_by_id,
+    )
     
     # Semantics: each claim links EVOLVED_FROM its single best predecessor
     # (cos-sim >= EVOLUTION_SIMILARITY_THRESHOLD). With this data:
@@ -175,7 +164,14 @@ async def test_mutation_detector_logic():
     assert (c1.id, c0.id) in evo_pairs
     assert (c2.id, c1.id) in evo_pairs
     
-    # Check temporal ordering (from_claim is later than to_claim)
+    for edge in evo_rels:
+        child = fx.claims_by_id[edge.from_claim_id]
+        parent = fx.claims_by_id[edge.to_claim_id]
+        assert child.article_id != parent.article_id
+        assert fx.articles_by_id[parent.article_id].published_at < fx.articles_by_id[child.article_id].published_at
+        assert edge.mutation_evidence["meaningful_change"] is True
+        assert edge.mutation_evidence["observed_propagation"] is False
+        assert "NUMERIC_DRIFT" in edge.mutation_evidence["mutation_types"]
     assert evo_rels[0].from_claim_id != c0.id
     assert sim_rels[0].from_claim_id == c2.id
     assert sim_rels[0].to_claim_id == c0.id

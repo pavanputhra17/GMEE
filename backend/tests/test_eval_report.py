@@ -2,8 +2,8 @@
 
 A probabilistic scorer must be *measured*, not asserted: these tests pin the
 hand-computed reference values for Brier score, ECE and reliability bins, the
-determinism of the bootstrap CI, McNemar discordance counting, and the report's
-honesty guard (it refuses to present n<100 numbers as results).
+the determinism of the bootstrap CI, McNemar discordance counting, conservative
+human consensus, and the report's unconditional exploratory status.
 """
 
 from __future__ import annotations
@@ -33,10 +33,11 @@ def _perfect_rows() -> list[dict[str, Any]]:
     ]
     rows: list[dict[str, Any]] = []
     for pid, bucket, sim, label in spec:
-        for annotator in ("a1", "a2"):
+        for identity in (uuid.UUID(int=1001), uuid.UUID(int=1002)):
             rows.append({
                 "pid": pid, "bucket": bucket, "sim": sim,
-                "label": label, "annotator": annotator,
+                "label": label, "annotator": f"user:{identity}",
+                "annotator_user_id": str(identity), "origin": "human",
             })
     return rows
 
@@ -113,21 +114,12 @@ def test_mcnemar_is_null_when_the_scorers_agree():
     assert m["p_value"] == 1.0
 
 
-def test_consensus_resolves_ties_deterministically():
-    # DISTINCT is the negative class: a tie involving it resolves conservatively
-    tie_with_negative = [
-        {"pid": "q", "sim": 0.9, "bucket": "b95", "label": "DISTINCT"},
-        {"pid": "q", "sim": 0.9, "bucket": "b95", "label": "SAME_STORY"},
-    ]
-    assert consensus(tie_with_negative)[0]["label"] == "DISTINCT"
+def test_consensus_never_adjudicates_human_disagreement():
+    from tests.test_research_support import human_vote
 
-    # a tie between two positive labels cannot move the binary decision; the
-    # alphabetical pick only keeps the value deterministic across processes
-    tie_between_positives = [
-        {"pid": "r", "sim": 0.9, "bucket": "b95", "label": "SAME_STORY"},
-        {"pid": "r", "sim": 0.9, "bucket": "b95", "label": "EVOLVED"},
-    ]
-    assert consensus(tie_between_positives)[0]["label"] == "EVOLVED"
+    for labels in (("DISTINCT", "SAME_STORY"), ("SAME_STORY", "EVOLVED"), ("EVOLVED", "EVOLVED", "DISTINCT")):
+        votes = [{**human_vote("q", label, user=i + 1), "pid": "q", "sim": 0.9, "bucket": "b95"} for i, label in enumerate(labels)]
+        assert consensus(votes) == consensus(list(reversed(votes))) == []
 
 
 def test_consensus_deduplicates_annotator_votes_per_pair():
@@ -146,15 +138,15 @@ def test_build_report_metrics_on_separable_corpus():
     assert m["auroc"] == 1.0
     assert m["best_f1"]["f1"] == 1.0
     assert m["f1_at_operating_point"]["f1"] == 1.0
-    assert m["brier"] == pytest.approx(0.05625, abs=1e-4)
-    assert m["ece"] == pytest.approx(0.175, abs=1e-4)
-
-    assert report["sweep"] and report["reliability"]
+    assert m["auprc"] == 1.0
+    assert m["brier"] is None and m["ece"] is None
+    assert m["score_kind"] == "score_not_probability"
+    assert report["sweep"] and report["reliability"] == []
     assert report["by_bucket"]["b95"] == {
         "n": 1, "SAME_STORY": 1, "EVOLVED": 0, "DISTINCT": 0
     }
-    # honesty guard: 4 pairs is not a result
-    assert "warning" in report and "n=4" in report["warning"]
+    assert report["status"] == "exploratory" and not report["publication_ready"]
+    assert "publication" in report["warning"] and "frozen" in report["warning"]
 
 
 def test_build_report_without_labels_explains_itself():
@@ -166,10 +158,15 @@ def test_build_report_without_labels_explains_itself():
 
 @pytest.mark.asyncio
 async def test_report_endpoint_returns_metrics(async_client, db_session, monkeypatch):
+    from app.api.deps import get_current_user
+    from app.main import app
     from app.models.eval import EvalPair, EvalPairLabel
-    from tests.conftest import TestingSessionLocal
+    from app.models.user import RoleEnum
+    from tests.test_research_support import seed_user
 
-    monkeypatch.setattr("app.db.postgres.async_session_maker", TestingSessionLocal)
+    first = await seed_user(db_session, 1, role=RoleEnum.admin)
+    second = await seed_user(db_session, 2)
+    app.dependency_overrides[get_current_user] = lambda: first
 
     pair = EvalPair(
         claim_a_id=uuid.uuid4(),
@@ -180,8 +177,8 @@ async def test_report_endpoint_returns_metrics(async_client, db_session, monkeyp
     db_session.add(pair)
     await db_session.flush()
     db_session.add_all([
-        EvalPairLabel(pair_id=pair.id, annotator="t1", label="SAME_STORY"),
-        EvalPairLabel(pair_id=pair.id, annotator="t2", label="SAME_STORY"),
+        EvalPairLabel(pair_id=pair.id, annotator=f"user:{first.id}", annotator_user_id=first.id, origin="human", label="SAME_STORY"),
+        EvalPairLabel(pair_id=pair.id, annotator=f"user:{second.id}", annotator_user_id=second.id, origin="human", label="SAME_STORY"),
     ])
     await db_session.commit()
 
@@ -193,6 +190,8 @@ async def test_report_endpoint_returns_metrics(async_client, db_session, monkeyp
     assert "metrics" in body
     # one pair cannot support a confidence interval — reported as null, not faked
     assert body["metrics"]["auroc_ci95"] is None
+    assert body["metrics"]["auroc"] is None  # Single class is undefined, not a fake 0.5.
+    assert body["metrics"]["brier"] is None
     assert "warning" in body
 
 
@@ -200,4 +199,56 @@ def test_report_route_is_mounted():
     from app.main import app
 
     assert "/api/v1/eval/report" in set(app.openapi()["paths"])
+
+
+def test_primary_excludes_every_weak_origin_and_missing_provenance():
+    for origin in ("automatic", "legacy", "test", None):
+        rows = _perfect_rows()
+        for row in rows:
+            if origin is None:
+                row.pop("origin")
+                row.pop("annotator_user_id")
+            else:
+                row["origin"] = origin
+        report = build_report(rows, n_boot=20)
+        assert consensus(rows) == [] and report["n_pairs"] == report["n_votes"] == 0
+        key = origin or "legacy"
+        assert report["exploratory_by_origin"][key]["n_pairs"] == 4
+        assert not report["exploratory_by_origin"][key]["gold"]
+        assert "not" in report["exploratory_by_origin"][key]["warning"]
+
+
+def test_human_name_without_authenticated_identity_is_not_gold():
+    rows = _perfect_rows()
+    for row in rows:
+        row["annotator"] = "human-claimed-by-client"
+    assert consensus(rows) == []
+
+
+def test_duplicate_current_rows_and_history_do_not_make_independent_votes():
+    row = _perfect_rows()[0]
+    row["history"] = [{"label": "SAME_STORY", "origin": "human"}] * 5
+    assert consensus([row, dict(row)]) == []
+    pairs = consensus(_perfect_rows() + _perfect_rows())
+    assert len(pairs) == 4 and all(p["human_vote_count"] == 2 for p in pairs)
+
+
+def test_live_report_never_makes_sample_count_publication_assurances():
+    rows = []
+    for i in range(120):
+        for row in _perfect_rows()[:2]:
+            rows.append({**row, "pid": f"large-{i}"})
+    report = build_report(rows, n_boot=20)
+    assert report["n_pairs"] == 120
+    assert report["warning"] and report["publication_ready"] is False
+
+
+def test_mutation_consensus_is_independent_from_binary_label_consensus():
+    from app.services.eval.provenance import pair_consensus
+    from tests.test_research_support import human_vote
+
+    votes = [human_vote("p", "EVOLVED", user=1, mutations=["NUMERIC_DRIFT"]), human_vote("p", "EVOLVED", user=2, mutations=["HEDGING_SHIFT"])]
+    result = pair_consensus(votes)
+    assert result["status"] == "agreed" and result["label"] == "EVOLVED"
+    assert result["mutation_status"] == "disagreement" and result["mutation_types"] is None
 

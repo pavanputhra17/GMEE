@@ -52,6 +52,37 @@ def auroc(scores: list[float], labels: list[bool]) -> float:
     return (rank_sum_pos - pos * (pos + 1) / 2) / (pos * neg)
 
 
+def precision_recall_curve(scores: list[float], labels: list[bool]) -> list[dict[str, float]]:
+    """Descending score thresholds; tied scores enter the curve together."""
+    if not scores or len(scores) != len(labels) or not any(labels):
+        return []
+    ranked = sorted(zip(scores, labels), key=lambda p: p[0], reverse=True)
+    positives = sum(labels)
+    tp = fp = i = 0
+    curve = []
+    while i < len(ranked):
+        threshold = ranked[i][0]
+        while i < len(ranked) and ranked[i][0] == threshold:
+            tp += int(ranked[i][1])
+            fp += int(not ranked[i][1])
+            i += 1
+        metrics = prf(tp, fp, positives - tp)
+        curve.append({"threshold": float(threshold), "precision": float(metrics["precision"] or 0.0), "recall": float(metrics["recall"] or 0.0), "f1": float(metrics["f1"] or 0.0)})
+    return curve
+
+
+def average_precision(scores: list[float], labels: list[bool]) -> float | None:
+    """Non-interpolated AUPRC/AP; unlike AUROC it depends on prevalence."""
+    curve = precision_recall_curve(scores, labels)
+    if not curve:
+        return None
+    previous_recall = total = 0.0
+    for point in curve:
+        total += (point["recall"] - previous_recall) * point["precision"]
+        previous_recall = point["recall"]
+    return total
+
+
 def best_f1_threshold(scores: list[float], labels: list[bool]) -> dict[str, float | None]:
     """Sweep every distinct score as a decision threshold, return the best F1.
 
@@ -109,8 +140,10 @@ def brier_score(scores: list[float], labels: list[bool]) -> float | None:
     """Mean squared error of probabilistic predictions (0 = perfect)."""
     if not scores or len(scores) != len(labels):
         return None
+    if any(not math.isfinite(s) or not 0 <= s <= 1 for s in scores):
+        return None
     total = sum(
-        (min(max(float(s), 0.0), 1.0) - (1.0 if y else 0.0)) ** 2
+        (float(s) - (1.0 if y else 0.0)) ** 2
         for s, y in zip(scores, labels)
     )
     return round(total / len(scores), 4)
@@ -121,12 +154,14 @@ def reliability_bins(
 ) -> list[dict[str, float]]:
     """Reliability-diagram data: per-bin mean score vs empirical positive rate.
 
-    Empty bins are omitted. Scores are clamped to [0, 1]; score 0 falls in the
+    Empty bins are omitted. Inputs must be probabilities in [0, 1]; score 0 falls in the
     first bin. `n` is returned as a float so the whole row stays numeric.
     """
     if not scores or len(scores) != len(labels) or n_bins < 1:
         return []
-    clamped = [min(max(float(s), 0.0), 1.0) for s in scores]
+    if any(not math.isfinite(s) or not 0 <= s <= 1 for s in scores):
+        return []
+    clamped = [float(s) for s in scores]
     bins: list[dict[str, float]] = []
     for i in range(n_bins):
         lo = i / n_bins

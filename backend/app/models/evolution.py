@@ -9,6 +9,7 @@ from sqlalchemy import (
     Enum,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -16,7 +17,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from sqlalchemy.sql import func
+from sqlalchemy.sql import func, text
 
 from app.models.base import Base
 
@@ -69,6 +70,13 @@ class ClaimRelationship(Base):
             "relationship_type",
             name="uq_claim_relationships_edge",
         ),
+        Index(
+            "uq_claim_relationships_evolved_child",
+            "from_claim_id",
+            unique=True,
+            postgresql_where=text("relationship_type = 'EVOLVED_FROM'"),
+            sqlite_where=text("relationship_type = 'EVOLVED_FROM'"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -79,6 +87,9 @@ class ClaimRelationship(Base):
         nullable=False
     )
     score: Mapped[float] = mapped_column(Float, nullable=False)
+    mutation_evidence: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON().with_variant(JSONB, "postgresql"), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     from_claim: Mapped["Claim"] = relationship("Claim", foreign_keys=[from_claim_id])

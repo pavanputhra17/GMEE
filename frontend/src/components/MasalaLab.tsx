@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
   Flag,
@@ -11,11 +11,16 @@ import {
   X,
 } from 'lucide-react';
 import { extrasApi, MutationChain, ScoopRace } from '../api/extras';
-import { apiClient } from '../api/client';
+import { apiClient, ApiError } from '../api/client';
+import { usePollingPolicy } from '../lib/polling';
+import { useAnimationActivity } from '../lib/useAnimationActivity';
+import { safeHttpUrl } from '../lib/urls';
+import { MutationComparator } from './MutationComparator';
+import { QueryError } from './QueryError';
 import { sound } from '../lib/sound';
 
 /**
- * Masala Lab — Scoop Races · Mutation DNA · Fact-or-Fake Arcade.
+ * Masala Lab — Mutation Comparator · Scoop Races · Mutation DNA · engine-agreement arcade.
  * All real data. Sound is synthesized in-browser (no assets), mutable.
  */
 
@@ -46,10 +51,11 @@ const fmtLag = (s: number): string => {
 /* ---------------------------------- Scoop Races */
 
 const ScoopRaces: React.FC = () => {
+  const polling = usePollingPolicy(60000);
   const q = useQuery({
     queryKey: ['scoops'],
-    queryFn: () => extrasApi.scoops(10),
-    refetchInterval: 60000,
+    queryFn: ({ signal }) => extrasApi.scoops(10, { signal }),
+    ...polling,
   });
 
   return (
@@ -57,7 +63,7 @@ const ScoopRaces: React.FC = () => {
       <div className="flex items-center gap-2 mb-1">
         <Flag className="w-5 h-5" />
         <h3 className="text-xl font-display">Scoop Races</h3>
-        <span className="chip-brutal border-hermes-bone/25 text-hermes-bone/55">who broke it first</span>
+        <span className="chip-brutal border-hermes-bone/25 text-hermes-bone/55">earliest in linked corpus</span>
       </div>
       <p className="text-[10px] font-mono uppercase tracking-widest text-hermes-bone/45 mb-4">
         exact publish-time lag behind the winner · from the corpus
@@ -65,6 +71,8 @@ const ScoopRaces: React.FC = () => {
 
       {q.isLoading ? (
         <div className="space-y-3">{[...Array(4)].map((_, i) => <div key={i} className="shimmer h-16" />)}</div>
+      ) : q.isError ? (
+        <QueryError title="Scoop races unavailable" error={q.error} onRetry={() => q.refetch()} retrying={q.isFetching} />
       ) : (q.data?.races.length ?? 0) === 0 ? (
         <p className="font-mono text-xs text-hermes-bone/50">No multi-outlet races found yet.</p>
       ) : (
@@ -79,7 +87,7 @@ const ScoopRaces: React.FC = () => {
                     const pct = r.lag_seconds === 0 ? 100 : Math.max(6, 100 - (r.lag_seconds / maxLag) * 88);
                     const win = r.position === 0;
                     return (
-                      <a key={r.id} href={r.url ?? '#'} target="_blank" rel="noreferrer"
+                      <a key={r.id} href={safeHttpUrl(r.url)} target="_blank" rel="noreferrer"
                          className="group flex items-center gap-2.5">
                         <span className={`font-mono text-[10px] tabular-nums w-14 shrink-0 ${win ? 'text-emerald-400 font-bold' : 'text-hermes-bone/45'}`}>
                           {win ? 'FIRST' : `+${fmtLag(r.lag_seconds)}`}
@@ -111,10 +119,13 @@ const ScoopRaces: React.FC = () => {
 
 const MutationDNA: React.FC = () => {
   const [active, setActive] = useState(0);
+  const hostRef = useRef<HTMLElement>(null);
+  const { animate } = useAnimationActivity(hostRef);
+  const polling = usePollingPolicy(120000);
   const q = useQuery({
     queryKey: ['mutations'],
-    queryFn: () => extrasApi.mutations(8),
-    refetchInterval: 120000,
+    queryFn: ({ signal }) => extrasApi.mutations(8, { signal }),
+    ...polling,
   });
 
   const chain: MutationChain | undefined = q.data?.chains[active];
@@ -123,23 +134,23 @@ const MutationDNA: React.FC = () => {
   // auto-cycle highlight through versions (the "helix read")
   const [cursor, setCursor] = useState(0);
   useEffect(() => {
-    if (!chain) return;
     setCursor(0);
+    if (!chain || !animate || chain.versions.length < 2) return;
     const iv = setInterval(() => {
       setCursor((c) => (c + 1) % chain.versions.length);
     }, 1600);
     return () => clearInterval(iv);
-  }, [chain]);
+  }, [chain, animate]);
 
   return (
-    <section className="card-brutal-dark p-6">
+    <section ref={hostRef} className="card-brutal-dark p-6">
       <div className="flex items-center gap-2 mb-1">
         <Dna className="w-5 h-5" />
         <h3 className="text-xl font-display">Mutation DNA</h3>
         <span className="chip-brutal border-hermes-bone/25 text-hermes-bone/55">same claim, drifting wording</span>
       </div>
       <p className="text-[10px] font-mono uppercase tracking-widest text-hermes-bone/45 mb-4">
-        cross-outlet chains ≥84% semantic match · watch each outlet's version
+        similarity-linked corpus groups · wording drift does not prove transmission
       </p>
 
       {/* chain selector */}
@@ -156,6 +167,8 @@ const MutationDNA: React.FC = () => {
 
       {q.isLoading ? (
         <div className="shimmer h-48" />
+      ) : q.isError ? (
+        <QueryError title="Mutation groups unavailable" error={q.error} onRetry={() => q.refetch()} retrying={q.isFetching} />
       ) : !chain ? (
         <p className="font-mono text-xs text-hermes-bone/50">No cross-outlet mutation chains yet — more corpus needed.</p>
       ) : (
@@ -163,8 +176,8 @@ const MutationDNA: React.FC = () => {
           {/* helix spine */}
           <div className="absolute left-2 top-2 bottom-2 w-0.5 bg-gradient-to-b from-hermes-red via-hermes-red-bright to-transparent" />
           {chain.versions.map((v, i) => (
-            <a key={v.id} href="#" onClick={() => setInspect(v.id)}
-               className={`relative block mb-2 border px-4 py-3 transition-all duration-500 ${
+            <button type="button" key={v.id} onClick={() => setInspect(v.id)}
+               className={`relative block w-full text-left mb-2 border px-4 py-3 transition-all duration-500 ${
                  i === cursor
                    ? 'border-hermes-red-bright bg-hermes-red/10 translate-x-2'
                    : i < cursor ? 'border-hermes-bone/10 opacity-40' : 'border-hermes-bone/15'
@@ -182,7 +195,7 @@ const MutationDNA: React.FC = () => {
               <div className={`text-xs mt-1 leading-relaxed ${i === cursor ? 'text-white' : 'text-hermes-bone/70'}`}>
                 “{v.text}”
               </div>
-            </a>
+            </button>
           ))}
         </div>
       )}
@@ -194,14 +207,18 @@ const MutationDNA: React.FC = () => {
 /* ---------------------------------- Mutation Inspector (lineage + typed diff) */
 
 const LineagePanel: React.FC<{ claimId: string }> = ({ claimId }) => {
+  const polling = usePollingPolicy();
   const q = useQuery({
     queryKey: ['lineage', claimId],
-    queryFn: () => extrasApi.lineage(claimId),
+    queryFn: ({ signal }) => extrasApi.lineage(claimId, { signal }),
+    ...polling,
+    refetchInterval: false,
   });
   const [di, setDi] = useState(0);
 
   if (q.isLoading) return <div className="shimmer h-40 mt-5" />;
-  if (q.isError || !q.data) {
+  if (q.isError) return <QueryError title="Mutation lineage unavailable" error={q.error} onRetry={() => q.refetch()} retrying={q.isFetching} />;
+  if (!q.data) {
     return (
       <p className="font-mono text-xs text-hermes-bone/50 mt-5 border border-dashed border-hermes-bone/20 p-3">
         No EVOLVED_FROM lineage for this claim — it has no recorded mutation links yet.
@@ -231,7 +248,7 @@ const LineagePanel: React.FC<{ claimId: string }> = ({ claimId }) => {
         )}
       </div>
 
-      {!diff ? null : (
+      {!diff ? <p className="text-xs font-mono text-hermes-bone/55">No recorded version diff returned.</p> : (
         <div className="space-y-3">
           <div className="flex flex-wrap gap-1.5 items-center">
             {diff.mutation_types.map((t) => (
@@ -313,13 +330,15 @@ const LineagePanel: React.FC<{ claimId: string }> = ({ claimId }) => {
   );
 };
 
-/* ---------------------------------- Fact-or-Fake Arcade */
+/* ---------------------------------- Engine-agreement Arcade */
 
 const Arcade: React.FC = () => {
   const [claim, setClaim] = useState<{ id: string; text: string; domain: string | null } | null>(null);
   const [loading, setLoading] = useState(false);
   const [verdict, setVerdict] = useState<'SUPPORTED' | 'DISPUTED' | null>(null);
-  const [revealed, setRevealed] = useState<{ band: string; prob: number } | null>(null);
+  const [revealed, setRevealed] = useState<{ band: string; prob: number | null } | null>(null);
+  const [revealing, setRevealing] = useState(false);
+  const [arcadeError, setArcadeError] = useState<unknown>(null);
   const [score, setScore] = useState({ right: 0, wrong: 0, streak: 0 });
   const [soundOn, setSoundOn] = useState(false);
 
@@ -327,12 +346,14 @@ const Arcade: React.FC = () => {
     setLoading(true);
     setRevealed(null);
     setVerdict(null);
+    setArcadeError(null);
+    setClaim(null);
     try {
       const c = await apiClient.get('/verdicts/game/claim') as { id: string; text: string; domain: string | null };
+      if (!c?.id || typeof c.text !== 'string') throw new ApiError(200, c, 'The arcade API returned no claim.');
       setClaim(c);
-    } catch {
-      // Backend unreachable / no verdicted claims yet — leave claim cleared;
-      // the arcade renders its empty state instead of throwing.
+    } catch (error) {
+      setArcadeError(error);
       setClaim(null);
     } finally {
       setLoading(false);
@@ -342,23 +363,26 @@ const Arcade: React.FC = () => {
   useEffect(() => { void nextClaim(); }, []);
 
   const guess = async (g: 'SUPPORTED' | 'DISPUTED') => {
-    if (!claim || revealed) return;
+    if (!claim || revealed || revealing) return;
     setVerdict(g);
+    setRevealing(true);
+    setArcadeError(null);
     try {
-      const d = await apiClient.get(`/verdicts/${claim.id}`) as { verdict: string; probability: number };
+      const d = await apiClient.get(`/verdicts/${claim.id}`) as { verdict: string; probability: number | null };
       setRevealed({ band: d.verdict, prob: d.probability });
-      const engineSaysBad = d.verdict === 'DISPUTED';
-      const correct = (g === 'DISPUTED') === engineSaysBad;
-      if (correct) {
-        sound.win();
+      const agreed = g === d.verdict;
+      if (agreed) {
+        if (soundOn) sound.win();
         setScore((s) => ({ right: s.right + 1, wrong: s.wrong, streak: s.streak + 1 }));
       } else {
-        sound.lose();
+        if (soundOn) sound.lose();
         setScore((s) => ({ right: s.right, wrong: s.wrong + 1, streak: 0 }));
       }
-    } catch {
-      // Reveal failed — treat as unresolved round rather than crashing the UI.
+    } catch (error) {
+      setArcadeError(error);
       setRevealed(null);
+    } finally {
+      setRevealing(false);
     }
   };
 
@@ -367,38 +391,44 @@ const Arcade: React.FC = () => {
       <div className="flex items-center justify-between mb-1">
         <div className="flex items-center gap-2">
           <Gamepad2 className="w-5 h-5" />
-          <h3 className="text-xl font-display">Fact-or-Fake</h3>
+          <h3 className="text-xl font-display">Agree with engine</h3>
           <span className="chip-brutal border-hermes-red text-hermes-red-bright">ARCADE</span>
         </div>
         <button
           onClick={() => { const m = !soundOn; setSoundOn(m); sound.setMuted(!m); }}
           className="btn-ghost-brutal !py-1 !px-2 !text-hermes-bone !border-hermes-bone/25"
           title={soundOn ? 'sound on' : 'sound off'}
+                    aria-label={soundOn ? 'Mute arcade sound' : 'Enable arcade sound'}
+                    aria-pressed={soundOn}
         >
           {soundOn ? <Volume2 className="w-3.5 h-3.5" /> : <VolumeX className="w-3.5 h-3.5" />}
         </button>
       </div>
       <p className="text-[10px] font-mono uppercase tracking-widest text-hermes-bone/45 mb-4">
-        call it before the engine does · scored against the Verdict Engine
+        compare your band choice with the engine · agreement is not correctness
       </p>
 
       <div className="grid grid-cols-3 gap-2 mb-4">
         <div className="border border-hermes-bone/12 bg-hermes-panel-deep p-2 text-center">
-          <div className="text-[9px] font-mono uppercase tracking-widest text-hermes-bone/45">Right</div>
+          <div className="text-[9px] font-mono uppercase tracking-widest text-hermes-bone/45">Matched engine</div>
           <div className="font-display text-lg text-emerald-400 tabular-nums">{score.right}</div>
         </div>
         <div className="border border-hermes-bone/12 bg-hermes-panel-deep p-2 text-center">
-          <div className="text-[9px] font-mono uppercase tracking-widest text-hermes-bone/45">Wrong</div>
+          <div className="text-[9px] font-mono uppercase tracking-widest text-hermes-bone/45">Different from engine</div>
           <div className="font-display text-lg text-hermes-red-bright tabular-nums">{score.wrong}</div>
         </div>
         <div className="border border-hermes-bone/12 bg-hermes-panel-deep p-2 text-center">
-          <div className="text-[9px] font-mono uppercase tracking-widest text-hermes-bone/45">Streak</div>
+          <div className="text-[9px] font-mono uppercase tracking-widest text-hermes-bone/45">Agreement streak</div>
           <div className="font-display text-lg text-white tabular-nums">{score.streak}×</div>
         </div>
       </div>
 
-      {loading || !claim ? (
-        <div className="shimmer h-28" />
+      <p className="text-xs text-hermes-bone/55 mb-4">Local round counts only. Engine bands and support scores are unvalidated heuristics, not a truth benchmark.</p>
+      {arcadeError != null && <QueryError title={claim ? 'Engine reveal unavailable' : 'Arcade claim unavailable'} error={arcadeError} onRetry={() => claim && verdict ? guess(verdict) : nextClaim()} retrying={loading || revealing} />}
+      {loading ? (
+        <div role="status" aria-label="Loading arcade claim" className="shimmer h-28" />
+      ) : !claim ? (
+        !arcadeError && <p className="text-xs font-mono text-hermes-bone/55">No arcade claims returned.</p>
       ) : (
         <div className="border border-hermes-bone/20 bg-hermes-panel-deep p-4">
           <div className="font-mono text-[9px] uppercase tracking-widest text-hermes-bone/40 mb-2">
@@ -408,26 +438,24 @@ const Arcade: React.FC = () => {
 
           {!revealed ? (
             <div className="grid grid-cols-2 gap-2">
-              <button onClick={() => guess('SUPPORTED')}
+              <button disabled={revealing} onClick={() => void guess('SUPPORTED')}
                 className="btn-brutal !bg-emerald-500/15 !text-emerald-300 !border-emerald-400/50 hover:!bg-emerald-500/30 py-3">
                 <Check className="w-4 h-4 inline mr-1" /> SUPPORTED
               </button>
-              <button onClick={() => guess('DISPUTED')}
+              <button disabled={revealing} onClick={() => void guess('DISPUTED')}
                 className="btn-brutal !bg-hermes-red/15 !text-hermes-red-bright !border-hermes-red-bright/50 hover:!bg-hermes-red/35 py-3">
-                <X className="w-4 h-4 inline mr-1" /> FAKE / DISPUTED
+                <X className="w-4 h-4 inline mr-1" /> DISPUTED
               </button>
             </div>
           ) : (
             <div className="space-y-3">
               {(() => {
-                const engineBad = revealed!.band === 'DISPUTED';
-                const youCalledFake = verdict === 'DISPUTED';
-                const correct = youCalledFake === engineBad;
+                const agreed = verdict === revealed.band;
                 return (
                   <>
-                    <div className={`border p-3 font-mono text-xs ${correct ? 'border-emerald-400/50 text-emerald-300 bg-emerald-400/5' : 'border-hermes-red-bright/50 text-hermes-red-bright bg-hermes-red/5'}`}>
-                      {correct ? 'CORRECT! ' : 'MISSED. '}Engine says: {revealed!.band.replace(/_/g, ' ')}
-                      {' '}· P(supported)={(revealed!.prob * 100).toFixed(1)}%
+                    <div className={`border p-3 font-mono text-xs ${agreed ? 'border-emerald-400/50 text-emerald-300 bg-emerald-400/5' : 'border-hermes-red-bright/50 text-hermes-red-bright bg-hermes-red/5'}`}>
+                      {agreed ? 'MATCHED ENGINE. ' : 'DIFFERENT FROM ENGINE. '}Engine band: {revealed.band.replace(/_/g, ' ')}
+                      {' '}· heuristic support: {revealed.prob == null ? 'not supplied' : `${(revealed.prob * 100).toFixed(1)}%`} (unvalidated)
                     </div>
                     <button onClick={nextClaim} className="btn-brutal w-full py-3">
                       NEXT CLAIM →
@@ -447,13 +475,7 @@ const Arcade: React.FC = () => {
 
 const MasalaLab: React.FC = () => (
   <div className="space-y-8">
-    <div className="card-brutal-dark p-5 border-l-4 border-l-hermes-red">
-      <span className="font-display text-base">Masala Lab.</span>{' '}
-      <span className="text-sm text-hermes-bone/70">
-        Three ways to feel the corpus: race who broke stories first, watch claims mutate between
-        outlets, and test your own news instincts against the Verdict Engine.
-      </span>
-    </div>
+    <MutationComparator />
     <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
       <ScoopRaces />
       <MutationDNA />

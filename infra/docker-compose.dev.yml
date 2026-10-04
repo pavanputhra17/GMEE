@@ -1,0 +1,23 @@
+# Explicit local override. Never use this file on a public host.
+# Host tools use loopback; container-to-container URLs remain unchanged.
+services:
+  postgres:
+    ports:
+      - "127.0.0.1:15432:5432"
+  neo4j:
+    ports:
+      - "127.0.0.1:17474:7474"
+      - "127.0.0.1:17688:7687"
+  redis:
+    ports:
+      - "127.0.0.1:16379:6379"
+  backend:
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      ENVIRONMENT: development
+      ENABLE_SCHEDULER: "false"
+
+networks:
+  data:
+    internal: false

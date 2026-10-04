@@ -82,6 +82,26 @@ class Settings(BaseSettings):
     # Rate limiting. Disable in the test suite (tests share one IP and would
     # trip the login limiter against each other / against dev usage).
     RATE_LIMIT_ENABLED: bool = True
+    # When Redis is unreachable, sensitive endpoints (login, register, admin
+    # triggers) return 503 instead of silently dropping their brute-force guard.
+    # Ordinary read endpoints still fail open to keep the dashboard available.
+    RATE_LIMIT_FAIL_CLOSED_SENSITIVE: bool = True
+
+    # Proxy trust. Empty (default) = the raw X-Forwarded-For header is IGNORED
+    # and the socket peer (already rewritten by Uvicorn --forwarded-allow-ips)
+    # is the client identity. Only list networks you operate, e.g. "10.0.0.0/8".
+    TRUSTED_PROXY_CIDRS: str | list[str] = []
+
+    # Scheduler leader election. False = if Redis is unavailable no replica
+    # runs scheduled work (fail closed) instead of every replica running it.
+    LEADER_LOCK_FAIL_OPEN: bool = False
+
+    # Durable pipeline ownership. A worker owns claimed articles/jobs until the
+    # lease expires; expired claims are returned to the queue at most
+    # PIPELINE_MAX_ATTEMPTS times, then marked failed for operator review.
+    PIPELINE_LEASE_SECONDS: int = 900
+    PIPELINE_MAX_ATTEMPTS: int = 3
+    PIPELINE_RECOVERY_BATCH: int = 500
 
     @field_validator("JWT_SECRET")
     @classmethod
@@ -90,11 +110,37 @@ class Settings(BaseSettings):
             raise ValueError("JWT_SECRET must be at least 32 characters long")
         return v
 
-    @field_validator("CORS_ORIGINS", mode="before")
+    @field_validator("CORS_ORIGINS", "TRUSTED_PROXY_CIDRS", mode="before")
     @classmethod
     def assemble_cors_origins(cls, v: Any) -> Any:
         if isinstance(v, str) and not v.startswith("["):
             return [i.strip() for i in v.split(",") if i.strip()]
+        return v
+
+    @field_validator("TRUSTED_PROXY_CIDRS")
+    @classmethod
+    def validate_trusted_proxies(cls, v: Any) -> list[str]:
+        import ipaddress
+
+        networks = [v] if isinstance(v, str) else list(v or [])
+        for cidr in networks:
+            network = ipaddress.ip_network(cidr, strict=False)
+            if network.prefixlen == 0:
+                raise ValueError("TRUSTED_PROXY_CIDRS must not trust every address")
+        return networks
+
+    @field_validator("PIPELINE_LEASE_SECONDS")
+    @classmethod
+    def validate_lease(cls, v: int) -> int:
+        if not 30 <= v <= 86_400:
+            raise ValueError("PIPELINE_LEASE_SECONDS must be between 30 and 86400")
+        return v
+
+    @field_validator("PIPELINE_MAX_ATTEMPTS")
+    @classmethod
+    def validate_attempts(cls, v: int) -> int:
+        if not 1 <= v <= 20:
+            raise ValueError("PIPELINE_MAX_ATTEMPTS must be between 1 and 20")
         return v
 
     # Loads from local .env or parent root .env if running outside container

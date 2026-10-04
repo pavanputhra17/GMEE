@@ -1,4 +1,4 @@
-import { apiClient } from './client';
+import { apiClient, type ApiRequestOptions } from './client';
 
 export interface ScoopRacer {
   id: string;
@@ -75,15 +75,15 @@ export interface FeedbackResult {
 }
 
 export const extrasApi = {
-  scoops: (limit = 10) =>
-    apiClient.get(`/graph/scoops?limit=${limit}`) as Promise<{ races: ScoopRace[]; count: number }>,
-  mutations: (limit = 6) =>
-    apiClient.get(`/verdicts/game/mutations?min_versions=2&limit=${limit}`) as Promise<{
+  scoops: (limit = 10, options?: ApiRequestOptions) =>
+    apiClient.get(`/graph/scoops?limit=${limit}`, options) as Promise<{ races: ScoopRace[]; count: number }>,
+  mutations: (limit = 6, options?: ApiRequestOptions) =>
+    apiClient.get(`/verdicts/game/mutations?min_versions=2&limit=${limit}`, options) as Promise<{
       chains: MutationChain[];
     }>,
   gameClaim: () => apiClient.get('/verdicts/game/claim') as Promise<GameClaim>,
-  lineage: (claimId: string) =>
-    apiClient.get(`/graph/lineage/${claimId}`) as Promise<MutationLineage>,
+  lineage: (claimId: string, options?: ApiRequestOptions) =>
+    apiClient.get(`/graph/lineage/${claimId}`, options) as Promise<MutationLineage>,
   feedback: (
     claimId: string,
     vote: 'AGREE' | 'DISAGREE',

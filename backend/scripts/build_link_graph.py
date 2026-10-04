@@ -5,14 +5,19 @@
 Pipeline:
   1. Load processed articles from Postgres
   2. Embed titles+content locally (all-mpnet-base-v2, 768-dim, normalized)
-  3. Cosine-similarity matrix -> top-K neighbors above threshold -> SIMILAR edges
+  3. Blockwise cosine candidates -> bounded top-K neighbors -> SIMILAR edges
   4. Exact content_hash collisions -> DUPLICATE_OF edges
   5. Persist Article/Domain nodes + FROM_DOMAIN/SIMILAR/DUPLICATE_OF edges in Neo4j
 
 Usage (backend/, project .env loaded):
-  NEO4J_URI=bolt://127.0.0.1:7687 python scripts/build_link_graph.py
+  python scripts/build_link_graph.py --max-articles 10000 --block-size 256
+
+The article cap also limits embedding/input memory. The newest capped subset
+is processed, existing graph data is retained, and truncation is reported.
+Blockwise scoring uses bounded memory but still performs quadratic arithmetic.
 """
 
+import argparse
 import asyncio
 import os
 import sys
@@ -28,30 +33,40 @@ from neo4j import GraphDatabase
 from sqlalchemy import text
 
 from app.db.postgres import async_session_maker
+from app.services.evolution.similarity import top_neighbors, unit_matrix
 
 SIM_THRESHOLD = 0.82
 TOP_K = 3
 EMBED_BATCH = 64
+DEFAULT_MAX_ARTICLES = 10000
+DEFAULT_BLOCK_SIZE = 256
 
 
-async def load_articles() -> list[dict[str, Any]]:
+async def load_articles(max_articles: int = DEFAULT_MAX_ARTICLES) -> list[dict[str, Any]]:
+    if max_articles < 1:
+        raise ValueError("max_articles must be positive")
     async with async_session_maker() as db:
         res = await db.execute(
             text(
                 """
-                SELECT id::text, title, url, domain,
-                       COALESCE(cleaned_content, '') AS body,
+                SELECT id::text AS id, LEFT(COALESCE(title, ''), 300) AS title, url, domain,
+                       LEFT(COALESCE(cleaned_content, ''), 2000) AS body,
                        COALESCE(content_hash, '') AS chash,
                        EXTRACT(EPOCH FROM published_at)::bigint AS pub_ts,
                        COALESCE(word_count, 0) AS wc
                 FROM articles
                 WHERE processing_status = 'processed'
-                ORDER BY published_at ASC
+                ORDER BY published_at DESC NULLS LAST, id
+                LIMIT :max_articles
                 """
-            )
+            ),
+            {"max_articles": max_articles + 1},
         )
         rows = res.all()
-    print(f"loaded {len(rows)} processed articles")
+    if len(rows) > max_articles:
+        print(f"article cap reached: processing only the newest {max_articles} articles; existing graph data is retained")
+    rows = rows[:max_articles]
+    print(f"loaded {len(rows)} processed articles (cap={max_articles})")
     return [dict(r._mapping) for r in rows]
 
 
@@ -71,38 +86,44 @@ def embed_all(bodies: list[str]) -> np.ndarray:
     return vecs
 
 
-def find_edges(vecs: np.ndarray, hashes: list[str]):
+def find_edges(
+    vecs: np.ndarray,
+    hashes: list[str],
+    *,
+    top_k: int = TOP_K,
+    threshold: float = SIM_THRESHOLD,
+    block_size: int = DEFAULT_BLOCK_SIZE,
+):
+    if len(vecs) != len(hashes):
+        raise ValueError("each embedding must have a corresponding content hash")
+    if top_k < 1 or block_size < 1:
+        raise ValueError("top_k and block_size must be positive")
     n = len(vecs)
-    sims = vecs @ vecs.T
-    np.fill_diagonal(sims, -1.0)
-
-    edges = set()
-    # top-K above threshold per row
-    topk_idx = np.argpartition(-sims, range(min(TOP_K, n - 1)), axis=1)[:, :TOP_K]
-    for i in range(n):
-        for j in topk_idx[i]:
-            s = float(sims[i, j])
-            if s >= SIM_THRESHOLD:
+    edges: dict[tuple[int, int], float] = {}
+    if n > 1:
+        unit = unit_matrix(vecs)
+        for i in range(n):
+            for j, score in top_neighbors(
+                unit, i, limit=top_k, threshold=threshold, block_size=block_size,
+            ):
                 key = (min(i, j), max(i, j))
-                if key not in edges:
-                    edges.add((key[0], key[1], round(s, 4)))
+                edges[key] = max(edges.get(key, -1.0), round(score, 4))
 
-    # hash duplicates
     by_hash = defaultdict(list)
     for i, h in enumerate(hashes):
         if h:
             by_hash[h].append(i)
-    dupe_pairs = set()
-    for h, idxs in by_hash.items():
-        if len(idxs) > 1:
-            base = idxs[0]
-            for other in idxs[1:]:
-                dupe_pairs.add((base, other))
-
-    print(f"SIMILAR edges (>= {SIM_THRESHOLD}, top-{TOP_K}): {len(edges)}")
+    dupe_pairs = {
+        (idxs[0], other)
+        for idxs in by_hash.values() for other in idxs[1:]
+    }
+    print(f"SIMILAR edges (>= {threshold}, top-{top_k}): {len(edges)}")
     print(f"exact duplicate groups: {sum(1 for v in by_hash.values() if len(v) > 1)}")
     print(f"DUPLICATE_OF edges: {len(dupe_pairs)}")
-    return sorted(edges, key=lambda e: -e[2]), sorted(dupe_pairs)
+    return sorted(
+        [(i, j, score) for (i, j), score in edges.items()],
+        key=lambda edge: (-edge[2], edge[0], edge[1]),
+    ), sorted(dupe_pairs)
 
 
 def write_neo4j(articles: list[dict], sim_edges, dupe_edges):
@@ -178,12 +199,12 @@ def write_neo4j(articles: list[dict], sim_edges, dupe_edges):
             ).consume()
             print(f"  similar {min(off + B, len(sim_edges))}/{len(sim_edges)}")
 
-        # DUPLICATE_OF edges
-        rows = [
-            {"a": articles[i]["id"], "b": articles[j]["id"]}
-            for i, j in dupe_edges
-        ]
-        if rows:
+        # DUPLICATE_OF edges use the same bounded write payload as similarities.
+        for off in range(0, len(dupe_edges), B):
+            rows = [
+                {"a": articles[i]["id"], "b": articles[j]["id"]}
+                for i, j in dupe_edges[off:off + B]
+            ]
             ses.run(
                 """
                 UNWIND $rows AS r
@@ -240,16 +261,47 @@ def write_neo4j(articles: list[dict], sim_edges, dupe_edges):
     print(f"\ngraph build finished in {(datetime.now(UTC) - t0).total_seconds():.1f}s")
 
 
-async def main() -> None:
-    articles = await load_articles()
-    bodies = [
-        f"{a['title']}. {a['body']}"[:2000] for a in articles
-    ]
+async def main(
+    *,
+    max_articles: int = DEFAULT_MAX_ARTICLES,
+    block_size: int = DEFAULT_BLOCK_SIZE,
+) -> None:
+    articles = await load_articles(max_articles=max_articles)
+    if not articles:
+        print("No processed articles; nothing to embed or project.")
+        return
+    bodies = [f"{a['title']}. {a['body']}"[:2000] for a in articles]
     hashes = [a["chash"] for a in articles]
     vecs = embed_all(bodies)
-    sim_edges, dupe_edges = find_edges(vecs, hashes)
+    sim_edges, dupe_edges = find_edges(vecs, hashes, block_size=block_size)
     write_neo4j(articles, sim_edges, dupe_edges)
 
 
+def _positive_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a positive integer") from exc
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--max-articles", type=_positive_int,
+        default=os.environ.get("LINK_GRAPH_MAX_ARTICLES", str(DEFAULT_MAX_ARTICLES)),
+        help="maximum newest articles loaded/embedded (default: 10000, or LINK_GRAPH_MAX_ARTICLES)",
+    )
+    parser.add_argument(
+        "--block-size", type=_positive_int,
+        default=os.environ.get("LINK_GRAPH_BLOCK_SIZE", str(DEFAULT_BLOCK_SIZE)),
+        help="maximum cosine scores materialized per query block (default: 256)",
+    )
+    return parser.parse_args(argv)
+
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    args = parse_args()
+    asyncio.run(main(max_articles=args.max_articles, block_size=args.block_size))

@@ -9,9 +9,12 @@ import {
   RefreshCw,
 } from 'lucide-react';
 import { corpusApi } from '../api/corpus';
+import { usePollingPolicy } from '../lib/polling';
+import { safeHttpUrl } from '../lib/urls';
+import { QueryError } from './QueryError';
 
 /**
- * CorpusExplorer — the real 6,436-article corpus: searchable listing,
+ * CorpusExplorer — searchable real corpus listing,
  * live story clusters from Neo4j, and the true ingest stream.
  */
 
@@ -22,23 +25,26 @@ const CorpusExplorer: React.FC = () => {
   const [query, setQuery] = useState('');
   const [domain, setDomain] = useState('');
   const [offset, setOffset] = useState(0);
+  const polling = usePollingPolicy(15000);
 
   const list = useQuery({
     queryKey: ['corpus', query, domain, offset],
-    queryFn: () => corpusApi.list({ q: query, domain, limit: PAGE, offset }),
-    refetchInterval: 15000,
+    queryFn: ({ signal }) => corpusApi.list({ q: query, domain, limit: PAGE, offset }, { signal }),
+    ...polling,
   });
 
   const clusters = useQuery({
     queryKey: ['clusters'],
-    queryFn: () => corpusApi.storyClusters(3, 4),
-    refetchInterval: 30000,
+    queryFn: ({ signal }) => corpusApi.storyClusters(3, 4, { signal }),
+    ...polling,
+    refetchInterval: polling.refetchInterval === false ? false : Math.max(30000, polling.refetchInterval),
   });
 
   const recent = useQuery({
     queryKey: ['recent-articles'],
-    queryFn: () => corpusApi.recent(10),
-    refetchInterval: 20000,
+    queryFn: ({ signal }) => corpusApi.recent(10, { signal }),
+    ...polling,
+    refetchInterval: polling.refetchInterval === false ? false : Math.max(20000, polling.refetchInterval),
   });
 
   const submitSearch = (e: React.FormEvent) => {
@@ -62,11 +68,11 @@ const CorpusExplorer: React.FC = () => {
         </div>
 
         {clusters.isLoading ? (
-          <div className="shimmer h-40" />
+          <div role="status" aria-label="Loading story clusters" className="shimmer h-40" />
         ) : clusters.isError ? (
-          <p className="font-mono text-xs text-hermes-red-bright">
-            Graph unavailable — is the backend up?
-          </p>
+          <QueryError title="Story clusters unavailable" error={clusters.error} onRetry={() => clusters.refetch()} retrying={clusters.isFetching} />
+        ) : clusters.data?.clusters.length === 0 ? (
+          <p className="text-xs font-mono text-hermes-bone/55">No story clusters returned.</p>
         ) : (
           <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
             {clusters.data?.clusters.map((c) => (
@@ -76,7 +82,7 @@ const CorpusExplorer: React.FC = () => {
               >
                 <div className="flex items-start justify-between gap-3">
                   <a
-                    href={c.url}
+                    href={safeHttpUrl(c.url)}
                     target="_blank"
                     rel="noreferrer"
                     className="font-display text-lg leading-snug hover:text-hermes-red-bright transition-colors"
@@ -91,7 +97,7 @@ const CorpusExplorer: React.FC = () => {
                   {c.neighbors.map((nb) => (
                     <a
                       key={nb.id}
-                      href={nb.url}
+                      href={safeHttpUrl(nb.url)}
                       target="_blank"
                       rel="noreferrer"
                       className="group flex items-center gap-2 font-mono text-[11px] text-hermes-bone/70 hover:text-hermes-bone"
@@ -127,6 +133,7 @@ const CorpusExplorer: React.FC = () => {
 
           <form onSubmit={submitSearch} className="flex items-center gap-2">
             <select
+              aria-label="Corpus outlet filter"
               value={domain}
               onChange={(e) => {
                 setDomain(e.target.value);
@@ -143,12 +150,13 @@ const CorpusExplorer: React.FC = () => {
             </select>
             <div className="flex items-center border border-hermes-bone/25 bg-hermes-panel-deep">
               <input
+                aria-label="Corpus search query"
                 value={q}
                 onChange={(e) => setQ(e.target.value)}
                 placeholder="search titles & authors…"
                 className="bg-transparent text-hermes-bone font-mono text-xs px-3 py-1.5 outline-none w-48 md:w-64 placeholder:text-hermes-bone/35"
               />
-              <button type="submit" className="btn-brutal !py-1.5 !px-2.5 m-0.5">
+              <button type="submit" aria-label="Search corpus" className="btn-brutal !py-1.5 !px-2.5 m-0.5">
                 <Search className="w-3.5 h-3.5" />
               </button>
             </div>
@@ -156,20 +164,21 @@ const CorpusExplorer: React.FC = () => {
         </div>
 
         {list.isLoading ? (
-          <div className="space-y-2">
+          <div role="status" aria-label="Loading corpus articles" className="space-y-2">
             {[...Array(6)].map((_, i) => (
               <div key={i} className="shimmer h-12" />
             ))}
           </div>
         ) : list.isError ? (
-          <p className="font-mono text-xs text-hermes-red-bright">Failed to load corpus.</p>
+          <QueryError title="Corpus articles unavailable" error={list.error} onRetry={() => list.refetch()} retrying={list.isFetching} />
         ) : (
           <>
+            {list.data?.items.length === 0 && <p className="text-xs font-mono text-hermes-bone/55 py-4">No articles match this search.</p>}
             <div className="divide-y divide-hermes-bone/8">
               {list.data?.items.map((a) => (
                 <a
                   key={a.id}
-                  href={a.url}
+                  href={safeHttpUrl(a.url)}
                   target="_blank"
                   rel="noreferrer"
                   className="flex items-center justify-between gap-4 py-2.5 group"
@@ -186,7 +195,7 @@ const CorpusExplorer: React.FC = () => {
                       {a.published_at && (
                         <span>· {new Date(a.published_at).toLocaleDateString()}</span>
                       )}
-                      {a.word_count ? <span>· {a.word_count}w</span> : null}
+                      {a.word_count != null ? <span>· {a.word_count}w</span> : null}
                     </span>
                   </div>
                   <ExternalLink className="w-3.5 h-3.5 shrink-0 text-hermes-bone/30 group-hover:text-hermes-red-bright" />
@@ -227,20 +236,22 @@ const CorpusExplorer: React.FC = () => {
             <h2 className="text-2xl font-display">Ingest Stream</h2>
           </div>
           <span className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-widest text-hermes-bone/45">
-            <RefreshCw className="w-3 h-3 animate-spin-slow" /> newest collections · postgres
+            <RefreshCw className={`w-3 h-3 ${recent.isFetching ? 'animate-spin' : ''}`} aria-hidden="true" /> newest collections · postgres
           </span>
         </div>
 
         {recent.isLoading ? (
-          <div className="shimmer h-32" />
+          <div role="status" aria-label="Loading ingest stream" className="shimmer h-32" />
         ) : recent.isError ? (
-          <p className="font-mono text-xs text-hermes-red-bright">Stream unavailable.</p>
+          <QueryError title="Ingest stream unavailable" error={recent.error} onRetry={() => recent.refetch()} retrying={recent.isFetching} />
+        ) : recent.data?.items.length === 0 ? (
+          <p className="text-xs font-mono text-hermes-bone/55">No collected articles returned.</p>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 divide-y md:divide-y-0 divide-hermes-bone/8">
             {recent.data?.items.map((r) => (
               <a
                 key={r.id}
-                href={r.url}
+                href={safeHttpUrl(r.url)}
                 target="_blank"
                 rel="noreferrer"
                 className="group py-2 flex flex-col gap-0.5 border-b border-hermes-bone/8 last:border-0"
