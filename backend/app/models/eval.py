@@ -1,9 +1,16 @@
 import uuid
 from datetime import datetime
-
 from typing import Any
 
-from sqlalchemy import JSON, CheckConstraint, DateTime, Float, ForeignKey, String, UniqueConstraint
+from sqlalchemy import (
+    JSON,
+    CheckConstraint,
+    DateTime,
+    Float,
+    ForeignKey,
+    String,
+    UniqueConstraint,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func

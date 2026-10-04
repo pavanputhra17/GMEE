@@ -496,8 +496,8 @@ class VerdictEngine:
                 "method_version": METHOD_VERSION,
                 "nli": nli_configuration(),
                 "warnings": [
-                    "The legacy probability field is an uncalibrated heuristic, "
-                    "not a probability of truth.",
+                    ("The legacy probability field is an uncalibrated heuristic, "
+                    "not a probability of truth."),
                     "Corpus-local textual stance is not independent fact verification.",
                     "Language and entity signals cannot establish factual support.",
                 ],

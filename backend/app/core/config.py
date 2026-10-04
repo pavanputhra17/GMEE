@@ -7,6 +7,18 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     POSTGRES_URL: str
+    
+    @field_validator("POSTGRES_URL", mode="before")
+    @classmethod
+    def fix_postgres_scheme(cls, v: Any) -> Any:
+        """Render provides postgres:// but asyncpg needs postgresql+asyncpg://."""
+        if isinstance(v, str):
+            if v.startswith("postgres://"):
+                v = v.replace("postgres://", "postgresql+asyncpg://", 1)
+            elif v.startswith("postgresql://"):
+                v = v.replace("postgresql://", "postgresql+asyncpg://", 1)
+        return v
+
     NEO4J_URI: str = ""
     NEO4J_USER: str = ""
     NEO4J_PASSWORD: str = ""
@@ -37,6 +49,7 @@ class Settings(BaseSettings):
     
     # NLP
     ANTHROPIC_API_KEY: str = ""
+    HUGGINGFACE_API_KEY: str = ""
     LLM_MODEL: str = "claude-haiku-4-5-20251001"
     NLP_MAX_ARTICLES_PER_CYCLE: int = 10
     # Claim-extraction backend. "" (default) auto-selects: Anthropic when an

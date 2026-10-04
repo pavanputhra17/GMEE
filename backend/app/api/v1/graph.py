@@ -47,11 +47,13 @@ class MutationSummaryRequest(BaseModel):
 
 @router.post("/timeline/mutation-summary", dependencies=[Depends(get_current_user)])
 async def get_timeline_mutation_summary(payload: MutationSummaryRequest) -> dict[str, Any]:
+    import uuid
+
+    from sqlalchemy import select
+
     from app.db.postgres import async_session_maker
     from app.models.claim import Claim
-    from sqlalchemy import select
     from app.services.nlp.llm_client import get_llm_client
-    import uuid
     
     # validate UUIDs
     valid_ids = []

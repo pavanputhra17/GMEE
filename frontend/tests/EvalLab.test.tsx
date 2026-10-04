@@ -85,7 +85,8 @@ describe('Eval Lab authenticated labeling', () => {
     await screen.findByText(/Claim A text here/);
     fireEvent.keyDown(screen.getByLabelText('Notes (optional)'), { key: '1' });
     expect(fetch.mock.calls.filter(([url]) => String(url).endsWith('/eval/label'))).toHaveLength(0);
-    fireEvent.click(screen.getByRole('button', { name: /Same story/ }));
+    // Prefix-anchored: the EVOLVED card's hint also contains "Same story".
+    fireEvent.click(screen.getByRole('button', { name: /^Same story/ }));
     await waitFor(() => expect(screen.getByRole('button', { name: /Distinct/ }).hasAttribute('disabled')).toBe(true));
     fireEvent.keyDown(window, { key: '3' });
     expect(fetch.mock.calls.filter(([url]) => String(url).endsWith('/eval/label'))).toHaveLength(1);
@@ -170,7 +171,14 @@ describe('Eval Lab authenticated labeling', () => {
     fireEvent.click(screen.getByRole('button', { name: /Download actual export/ }));
     await screen.findByText('Export response downloaded.');
     const blob = createUrl.mock.calls[0][0] as Blob;
-    expect(await blob.text()).toBe(bytes);
+    // jsdom's Blob lacks .text(); FileReader is the portable reader here.
+    const text = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.onerror = () => reject(reader.error);
+      reader.readAsText(blob);
+    });
+    expect(text).toBe(bytes);
     expect(downloads).toEqual(['review-v1.json']);
     expect(revoke).toHaveBeenCalledWith('blob:actual-export');
     const request = fetch.mock.calls.find(([url]) => String(url).includes('/eval/export'));

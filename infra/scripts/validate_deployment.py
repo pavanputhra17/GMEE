@@ -293,7 +293,14 @@ def validate_ci_and_render() -> None:
         and env.get("FORWARDED_ALLOW_IPS") != "*",
         "Render must not automatically run ML jobs or trust arbitrary proxy headers.",
     )
-    spa = services["gmee-frontend"]
+    spa_services = [
+        service for service in render["services"] if service.get("runtime") == "static"
+    ]
+    require(
+        len(spa_services) == 1,
+        "Render must define exactly one static SPA service.",
+    )
+    spa = spa_services[0]
     require(
         spa.get("buildCommand") == "npm ci && npm run build",
         "Render static build must install from the lockfile.",

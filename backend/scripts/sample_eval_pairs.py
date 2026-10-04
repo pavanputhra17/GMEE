@@ -34,10 +34,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from sqlalchemy import text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from app.services.eval.dataset import lock_pair_writes
-
 from app.db.postgres import async_session_maker
 from app.models.eval import EvalPair
+from app.services.eval.dataset import lock_pair_writes
 
 BUCKETS = [
     ("b95", 0.95, 1.01),
@@ -127,7 +126,7 @@ def pick_pairs(pool, per_bucket: int, rng: random.Random) -> list[tuple[str, str
 def pool_fingerprint(pool) -> str:
     digest = hashlib.sha256()
     for claim_id, embedding, domain in sorted(pool, key=lambda p: p[0]):
-        digest.update(f"{claim_id}:{domain}:".encode("utf-8"))
+        digest.update(f"{claim_id}:{domain}:".encode())
         digest.update(np.asarray(embedding, dtype="<f4").tobytes())
     return digest.hexdigest()
 

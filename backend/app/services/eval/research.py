@@ -24,12 +24,22 @@ from typing import Any
 import numpy as np
 
 from app.services.eval.dataset import (
-    POSITIVE_LABELS, SPLITS, DatasetError, canonical_json, records_bytes, validate_dataset,
+    POSITIVE_LABELS,
+    SPLITS,
+    DatasetError,
+    canonical_json,
+    records_bytes,
+    validate_dataset,
 )
 from app.services.eval.features import lexical_jaccard
 from app.services.eval.metrics import (
-    auroc, average_precision, best_f1_threshold, brier_score,
-    expected_calibration_error, precision_recall_curve, reliability_bins,
+    auroc,
+    average_precision,
+    best_f1_threshold,
+    brier_score,
+    expected_calibration_error,
+    precision_recall_curve,
+    reliability_bins,
 )
 
 PROTOCOL_VERSION = "gmee-experiment-v1"

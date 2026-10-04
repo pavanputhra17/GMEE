@@ -25,7 +25,9 @@ services:
       - key: FORWARDED_ALLOW_IPS
         value: "127.0.0.1"
       - key: CORS_ORIGINS
-        value: '["https://gmee-frontend.onrender.com"]'
+        value: '["https://gmee-v1.onrender.com"]'
+      - key: RATE_LIMIT_ENABLED
+        value: "true"
       # ── Secrets (set these in the Render Dashboard) ──
       - key: JWT_SECRET
         generateValue: true
@@ -34,13 +36,13 @@ services:
       - key: DATABASE_URL
         sync: false
       - key: NEO4J_URI
-        sync: false
+        value: ""             # optional — leave empty to skip
       - key: NEO4J_USER
-        sync: false
+        value: ""
       - key: NEO4J_PASSWORD
-        sync: false
+        value: ""
       - key: REDIS_URL
-        sync: false
+        value: ""             # optional — leave empty to skip
       - key: ANTHROPIC_API_KEY
         sync: false
     # Docker CMD runs alembic upgrade head before the single Uvicorn worker.
@@ -48,7 +50,7 @@ services:
 
   # ──────── Frontend (Vite Static Site) ────────
   - type: web
-    name: gmee-frontend
+    name: gmee-v1
     runtime: static
     rootDir: frontend
     buildCommand: npm ci && npm run build
@@ -77,3 +79,4 @@ services:
       - type: rewrite
         source: /*
         destination: /index.html
+

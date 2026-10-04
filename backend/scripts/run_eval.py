@@ -28,7 +28,12 @@ from sqlalchemy import text
 
 from app.db.postgres import async_session_maker
 from app.services.eval.metrics import mcnemar_test
-from app.services.eval.report import ENGINE_OPERATING_POINT, build_report, consensus, score_diagnostics
+from app.services.eval.report import (
+    ENGINE_OPERATING_POINT,
+    build_report,
+    consensus,
+    score_diagnostics,
+)
 
 OUT = Path(__file__).resolve().parent.parent / "eval_exploratory_report.json"
 

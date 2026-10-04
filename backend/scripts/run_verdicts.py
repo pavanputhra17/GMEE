@@ -89,7 +89,7 @@ def load_outlet_priors(path: Path | None = None) -> OutletPriors:
         return {}
     data = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
-        raise ValueError("Outlet priors must be a JSON object keyed by domain")
+        raise TypeError("Outlet priors must be a JSON object keyed by domain")
     priors: OutletPriors = {}
     for domain, stats in data.items():
         normalized = canonical_domain(domain) if isinstance(domain, str) else None

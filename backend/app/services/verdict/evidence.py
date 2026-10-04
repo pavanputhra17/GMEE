@@ -113,9 +113,9 @@ def _timestamp(value: Any) -> datetime | None:
     if value is None:
         return None
     if isinstance(value, str):
-        value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        value = datetime.fromisoformat(value)
     if not isinstance(value, datetime):
-        raise ValueError("Invalid corpus timestamp")
+        raise TypeError("Invalid corpus timestamp")
     return as_utc(value)
 
 

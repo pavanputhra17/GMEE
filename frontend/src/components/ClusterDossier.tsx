@@ -213,8 +213,8 @@ const MutationSummaryViewer: React.FC<{ articleIds: string[] }> = ({ articleIds 
         const { timelineApi } = await import('../api/timeline');
         const res = await timelineApi.mutationSummary(articleIds);
         if (active) setSummary(res.summary);
-      } catch (err: any) {
-        if (active) setError(err.message || 'Failed to fetch summary');
+      } catch (err: unknown) {
+        if (active) setError(err instanceof Error ? err.message : 'Failed to fetch summary');
       } finally {
         if (active) setLoading(false);
       }

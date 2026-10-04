@@ -162,9 +162,10 @@ async def semantic_search(
 
     from sqlalchemy import text as sql_text
 
+    from app.core.config import get_settings
     from app.services.nlp.embedding_service import EmbeddingService
 
-    if not EmbeddingService.is_loaded():
+    if not EmbeddingService.is_loaded() and not get_settings().HUGGINGFACE_API_KEY:
         raise HTTPException(
             status_code=503,
             detail="Embedding model is not loaded yet (warming up); retry shortly.",

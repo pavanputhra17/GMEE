@@ -169,8 +169,8 @@ def generate_md_report(report: dict, stats: dict) -> str:
 
     # Dataset summary
     lines.append("## 1. Evaluation Dataset Summary\n")
-    lines.append(f"| Metric | Value |")
-    lines.append(f"|--------|-------|")
+    lines.append("| Metric | Value |")
+    lines.append("|--------|-------|")
     lines.append(f"| Total eval pairs | **{stats['total_pairs']}** |")
     lines.append(f"| Total annotations (labels) | **{stats['total_labels']}** |")
     lines.append(f"| Human consensus pairs (>=2 authenticated users; no disagreement) | **{report['n_pairs']}** |")

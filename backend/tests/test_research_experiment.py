@@ -1,11 +1,11 @@
 """Run the actual sklearn protocol on synthetic unit cases, never the live corpus."""
 
-from copy import deepcopy
 import hashlib
 import json
-from pathlib import Path
 import subprocess
 import sys
+from copy import deepcopy
+from pathlib import Path
 from xml.etree import ElementTree
 
 import pytest

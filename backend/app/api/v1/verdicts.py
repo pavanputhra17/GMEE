@@ -59,13 +59,17 @@ class VerdictCheckBody(BaseModel):
     @field_validator("as_of", mode="before")
     @classmethod
     def require_iso_datetime(cls, value: Any) -> Any:
-        if value is not None and not isinstance(value, datetime):
-            if not isinstance(value, str) or not re.match(
-                r"^\d{4}-\d{2}-\d{2}[Tt ]\d{2}:\d{2}", value
-            ):
-                raise ValueError(
-                    "as_of must be an ISO datetime, not a date or epoch number"
-                )
+        if (
+            value is not None
+            and not isinstance(value, datetime)
+            and (
+                not isinstance(value, str)
+                or not re.match(r"^\d{4}-\d{2}-\d{2}[Tt ]\d{2}:\d{2}", value)
+            )
+        ):
+            raise ValueError(
+                "as_of must be an ISO datetime, not a date or epoch number"
+            )
         return value
 
 
@@ -121,8 +125,10 @@ async def check_verdict_external(
     _current_user: User = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Authenticated, external web grounding using Wikipedia Action API."""
-    import httpx
     import urllib.parse
+
+    import httpx
+
     from app.services.nlp.llm_client import get_llm_client
     
     query = urllib.parse.quote(body.claim_text[:100]) # use first 100 chars for search
@@ -188,10 +194,10 @@ def _score_metadata(value: Any) -> dict[str, Any]:
         "score_kind": "legacy_unverified",
         "method_version": version if isinstance(version, str) else None,
         "warnings": [
-            "Legacy or unrecognized verdict evidence: stance-grounded support "
+            ("Legacy or unrecognized verdict evidence: stance-grounded support "
             "has not been verified; similarity-only support or self-derived "
             "outlet priors may have been used. This score is not a calibrated "
-            "probability. Stored records have not been automatically rescored."
+            "probability. Stored records have not been automatically rescored.")
         ],
     }
 
@@ -318,8 +324,8 @@ async def verdict_stats() -> dict[str, Any]:
         "total_claims": total_claims or 0,
         "warnings": [
             "Stored score aggregates may mix legacy and uncalibrated verdicts.",
-            "Outlet credibility is a compatibility proxy of engine labels, "
-            "not independently measured outlet reliability.",
+            ("Outlet credibility is a compatibility proxy of engine labels, "
+            "not independently measured outlet reliability."),
         ],
         "distribution": [
             {
@@ -595,8 +601,8 @@ async def submit_verdict_feedback(
         "feedback_kind": "anonymous_unverified",
         "is_ground_truth": False,
         "warnings": [
-            "Anonymous feedback is unverified, not authoritative gold "
-            "or evidence of verdict accuracy. Shared IPs may share one vote."
+            ("Anonymous feedback is unverified, not authoritative gold "
+            "or evidence of verdict accuracy. Shared IPs may share one vote.")
         ],
     }
 
@@ -655,8 +661,8 @@ async def verdict_summary() -> dict[str, Any]:
         ],
         "total_scored": total_scored,
         "warnings": [
-            "Stored aggregates may include legacy verdicts. Scores are "
-            "uncalibrated heuristics, not probabilities of truth."
+            ("Stored aggregates may include legacy verdicts. Scores are "
+            "uncalibrated heuristics, not probabilities of truth.")
         ],
         "human_feedback": {
             "feedback_kind": "anonymous_unverified",

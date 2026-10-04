@@ -1,8 +1,8 @@
 """Exercise the exporter on an injected snapshot, without a live DB or mutations."""
 
-from contextlib import asynccontextmanager
 import hashlib
 import json
+from contextlib import asynccontextmanager
 
 import pytest
 

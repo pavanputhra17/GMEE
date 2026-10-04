@@ -83,8 +83,8 @@ async def get_clusters(db: AsyncSession = Depends(get_db_session)) -> Any:
 @router.get("/clusters/{topic_id}/mutation-summary", dependencies=[Depends(get_current_user)])
 async def get_cluster_mutation_summary(topic_id: int, db: AsyncSession = Depends(get_db_session)) -> Any:
     """Generates an LLM summary of how claims in this topic cluster mutated over time."""
-    from app.models.nlp import Claim
     from app.models.article import Article
+    from app.models.nlp import Claim
     from app.services.nlp.llm_client import get_llm_client
     
     # Fetch claims in the topic ordered by time

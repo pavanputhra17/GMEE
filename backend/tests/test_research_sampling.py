@@ -54,7 +54,7 @@ def test_empty_pool_and_zero_vectors_do_not_create_fake_similarity():
 @pytest.mark.asyncio
 async def test_database_pool_is_seeded_stable_not_sql_random(monkeypatch):
     db = AsyncMock()
-    db.execute.return_value = SimpleNamespace(all=lambda: [])
+    db.execute.return_value = SimpleNamespace(all=list)
     context = AsyncMock()
     context.__aenter__.return_value = db
     monkeypatch.setattr("scripts.sample_eval_pairs.async_session_maker", lambda: context)

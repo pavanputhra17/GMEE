@@ -16,17 +16,16 @@ from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
+from pydantic import ValidationError
 from sqlalchemy import select
 
 from app.api.deps import get_current_user
+from app.api.v1.eval import VALID_LABELS, EvalLabelBody, _blinded, _per_annotator
 from app.main import app
 from app.models.eval import EvalPairLabel
 from app.models.user import RoleEnum
 from app.services.eval.dataset import iso
 from tests.test_research_support import seed_pair, seed_user
-from pydantic import ValidationError
-
-from app.api.v1.eval import VALID_LABELS, EvalLabelBody, _blinded, _per_annotator
 
 PAIR_ID = "11111111-1111-1111-1111-111111111111"
 

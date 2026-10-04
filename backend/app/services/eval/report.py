@@ -6,12 +6,20 @@ from collections import Counter
 from typing import Any
 
 from app.services.eval.metrics import (
-    auroc, average_precision, best_f1_threshold, bootstrap_ci,
-    f1_at_threshold, sweep_thresholds,
+    auroc,
+    average_precision,
+    best_f1_threshold,
+    bootstrap_ci,
+    f1_at_threshold,
+    sweep_thresholds,
 )
 from app.services.eval.provenance import (
-    CONSENSUS_RULE, consensus, exploratory_consensus, human_identity,
-    origin_counts, pair_consensus,
+    CONSENSUS_RULE,
+    consensus,
+    exploratory_consensus,
+    human_identity,
+    origin_counts,
+    pair_consensus,
 )
 
 POSITIVE_LABELS = ("SAME_STORY", "EVOLVED")

@@ -13,11 +13,9 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy.dialects import postgresql
 
-
 # ──────────────────────────────────────────────────────────────────────
 # Lexical annotator (no heavy model dependencies)
 # ──────────────────────────────────────────────────────────────────────
-
 from scripts.auto_label_eval_pairs import (
     ANNOTATOR_ENTITY,
     ANNOTATOR_LEXICAL,

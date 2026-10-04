@@ -7,7 +7,13 @@ from itertools import combinations
 from typing import Any
 
 from app.services.eval.metrics import cohen_kappa
-from app.services.eval.provenance import ORIGINS, human_identity, origin_counts, origin_of, pair_consensus
+from app.services.eval.provenance import (
+    ORIGINS,
+    human_identity,
+    origin_counts,
+    origin_of,
+    pair_consensus,
+)
 
 
 def per_annotator(rows: Any) -> dict[str, Any]:

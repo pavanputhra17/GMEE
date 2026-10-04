@@ -49,12 +49,14 @@ async def scheduled_collection_job() -> None:
             return
         logger.info("Scheduler triggered collection job (leader)")
         try:
-            async with async_session_maker() as db:
-                async with run_job(db, JobTypeEnum.collection, trigger="scheduler") as job:
-                    summaries = await orchestrator.run_collection_cycle(db)
-                    job.summary = {"sources": [asdict(s) for s in summaries]}
-                    if lease.is_lost:
-                        logger.error("Leader lease lost during collection; results were fenced")
+            async with (
+                async_session_maker() as db,
+                run_job(db, JobTypeEnum.collection, trigger="scheduler") as job,
+            ):
+                summaries = await orchestrator.run_collection_cycle(db)
+                job.summary = {"sources": [asdict(s) for s in summaries]}
+                if lease.is_lost:
+                    logger.error("Leader lease lost during collection; results were fenced")
         except JobAlreadyRunning:
             logger.warning("A collection job is already running (durable record) — skipping")
         except Exception:

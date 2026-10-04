@@ -2,7 +2,10 @@
 
 from collections import Counter
 
-from scripts.generate_pub_report import compute_inter_annotator_agreement, generate_md_report
+from scripts.generate_pub_report import (
+    compute_inter_annotator_agreement,
+    generate_md_report,
+)
 from scripts.run_eval import evaluate
 from tests.test_research_support import research_records
 
