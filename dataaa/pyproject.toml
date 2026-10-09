@@ -1,0 +1,79 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gmee-backend"
+version = "0.1.0"
+description = "GMEE Backend"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.111.0",
+    "uvicorn>=0.30.1",
+    "sqlalchemy>=2.0.30",
+    "asyncpg>=0.29.0",
+    "alembic>=1.13.1",
+    "argon2-cffi>=23.1.0",
+    "PyJWT>=2.8.0",
+    "email-validator>=2.1.0",
+    "pydantic-settings>=2.2.1",
+    "neo4j>=5.20.0",
+    "redis>=5.0.4",
+    "httpx>=0.27.0",
+    "feedparser>=6.0.11",
+    "apscheduler>=3.10.4",
+    "beautifulsoup4>=4.12.3",
+    "py3langid>=0.3.0",
+    "datasketch>=1.6.4",
+    "python-dateutil>=2.9.0",
+    "anthropic>=0.25.0",
+    "spacy>=3.7.4",
+    "sentence-transformers>=2.7.0",
+    "pgvector>=0.2.5",
+    "bertopic>=0.16.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    # Exact pins: quality gates must not silently drift under the codebase.
+    # Bump deliberately, as a reviewed diff.
+    "pytest==9.1.1",
+    "pytest-cov==7.1.0",
+    "pytest-asyncio==1.4.0",
+    "aiosqlite==0.22.1",
+    "fakeredis==2.37.0",
+    "ruff==0.16.2",
+    "mypy==2.3.0",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+# Integration tests need a live Postgres + pgvector, so they are opt-in:
+#   pytest tests/integration -m integration
+addopts = '-m "not integration"'
+markers = [
+    "integration: needs a live Postgres + pgvector instance (tests/integration/)",
+]
+
+[tool.ruff]
+line-length = 88
+
+[tool.mypy]
+strict = true
+ignore_missing_imports = true
+
+# Test modules follow pytest conventions (untyped test functions are normal);
+# they still get their *bodies* fully checked via check_untyped_defs.
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+warn_return_any = false
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.ruff.lint]
+ignore = ["B008", "BLE001"]
