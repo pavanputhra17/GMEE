@@ -73,6 +73,23 @@ async function performRequest<T>(
         nlp_status: data.nlp_counts
       } as unknown as T;
     }
+
+    if (endpoint.startsWith('/corpus/articles/recent')) {
+      return { items: data.articles.slice(0, 15) } as unknown as T;
+    }
+
+    if (endpoint.startsWith('/corpus/graph/story-clusters')) {
+      const sample = data.articles.slice(0, 5);
+      const clusters = sample.map((a: any) => ({
+        id: a.id, title: a.title, domain: a.domain, url: a.url,
+        published_at: a.published_at, deg: Math.floor(Math.random() * 5) + 3,
+        neighbors: data.articles.slice(5, 12).map((n: any) => ({
+          id: n.id, title: n.title, domain: n.domain, url: n.url,
+          score: Math.random() * 0.5 + 0.5
+        }))
+      }));
+      return { clusters } as unknown as T;
+    }
     
     if (endpoint.startsWith('/graph/full') || endpoint.startsWith('/graph/claims')) {
       const sample = data.articles.slice(0, 50);
