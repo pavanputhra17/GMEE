@@ -76,7 +76,7 @@ async function performRequest<T>(
     
     if (endpoint.startsWith('/graph/full') || endpoint.startsWith('/graph/claims')) {
       const sample = data.articles.slice(0, 50);
-      const nodes = sample.map((a: any, i: number) => ({
+      const nodes = sample.map((a: any) => ({
         id: a.id, title: a.title, domain: a.domain, url: a.url,
         article_id: a.id, published_at: a.published_at,
         deg: Math.floor(Math.random() * 5),
