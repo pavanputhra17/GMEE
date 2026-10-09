@@ -33,5 +33,4 @@ EXPOSE 8000
 
 # Fail closed on migration errors; one worker avoids duplicate ML weights.
 # Uvicorn trusts only an explicitly configured proxy peer (loopback by default).
-COPY gmee_articles_export.csv ./
-CMD ["sh", "-c", "alembic upgrade head && python scripts/import_articles.py gmee_articles_export.csv || true && exec uvicorn app.main:app --host 0.0.0.0 --port \"${PORT:-8000}\" --workers 1 --proxy-headers --forwarded-allow-ips \"${FORWARDED_ALLOW_IPS:-127.0.0.1}\""]
+CMD ["sh", "-c", "alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port \"${PORT:-8000}\" --workers 1 --proxy-headers --forwarded-allow-ips \"${FORWARDED_ALLOW_IPS:-127.0.0.1}\""]
