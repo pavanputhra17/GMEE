@@ -1,0 +1,14 @@
+{
+  "dataset": "liar",
+  "sample_size": 500,
+  "precision": 0.5628,
+  "recall": 0.8381,
+  "f1": 0.6734,
+  "tp": 233,
+  "fp": 181,
+  "fn": 45,
+  "tn": 41,
+  "model_used": "google/flan-t5-base",
+  "eval_timestamp": "2026-09-17T05:03:33.684776+00:00",
+  "notes": ""
+}

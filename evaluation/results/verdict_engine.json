@@ -1,0 +1,48 @@
+{
+  "macro_f1": 0.183,
+  "sample_size": 300,
+  "per_class_f1": {
+    "SUPPORTED": 0.1008,
+    "DISPUTED": 0.0,
+    "UNRESOLVED": 0.4481
+  },
+  "confusion_matrix": {
+    "SUPPORTED": {
+      "SUPPORTED": 6,
+      "DISPUTED": 0,
+      "UNRESOLVED": 93
+    },
+    "DISPUTED": {
+      "SUPPORTED": 10,
+      "DISPUTED": 0,
+      "UNRESOLVED": 105
+    },
+    "UNRESOLVED": {
+      "SUPPORTED": 4,
+      "DISPUTED": 0,
+      "UNRESOLVED": 82
+    }
+  },
+  "ablation": {
+    "full_model": {
+      "macro_f1": 0.183
+    },
+    "without_corroboration": {
+      "macro_f1": 0.1887
+    },
+    "without_contradiction": {
+      "macro_f1": 0.2207
+    },
+    "without_track_record": {
+      "macro_f1": 0.183
+    },
+    "without_entity_grounding": {
+      "macro_f1": 0.1887
+    },
+    "without_language": {
+      "macro_f1": 0.1887
+    }
+  },
+  "limitation": "FEVER uses Wikipedia evidence; GMEE uses live web corpus. Results are approximate.",
+  "eval_timestamp": "2026-09-17T05:18:07.407024+00:00"
+}

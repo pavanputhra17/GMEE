@@ -1,0 +1,14 @@
+{
+  "temporal_validity_rate": 1.0,
+  "semantic_consistency_rate": 1.0,
+  "graph_connectivity": {
+    "total_claims": 3,
+    "total_evolved_from_edges": 2,
+    "total_similar_to_edges": 1
+  },
+  "average_out_degree": 1.0,
+  "longest_mutation_chain": 2,
+  "threshold": 0.85,
+  "db_url_evaluated": "sqlite+aiosqlite:///:memory: (test fixture)",
+  "eval_timestamp": "2026-09-17T05:20:11.595639+00:00"
+}

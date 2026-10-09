@@ -1,0 +1,26 @@
+[
+  {
+    "dataset": "liar",
+    "filename": "liar_test.csv",
+    "rows": 1283,
+    "downloaded_at": "2026-09-17T04:59:53.731353+00:00"
+  },
+  {
+    "dataset": "claimbuster",
+    "filename": "claimbuster_test.csv",
+    "rows": 1032,
+    "downloaded_at": "2026-09-17T04:59:54.722977+00:00"
+  },
+  {
+    "dataset": "multifc",
+    "filename": "multifc_test.csv",
+    "rows": 3481,
+    "downloaded_at": "2026-09-17T04:59:59.236410+00:00"
+  },
+  {
+    "dataset": "fever",
+    "filename": "fever_dev.jsonl",
+    "rows": 19998,
+    "downloaded_at": "2026-09-17T05:00:00.511875+00:00"
+  }
+]
