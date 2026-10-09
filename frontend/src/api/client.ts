@@ -98,6 +98,44 @@ export const apiClient = {
       return { clusters: [] } as any;
     }
 
+    if (path === '/graph/full' || path === '/graph/claims') {
+      const sample = data.articles.slice(0, 50);
+      const nodes = sample.map((a: any, i: number) => ({
+        id: a.id,
+        title: a.title,
+        domain: a.domain,
+        url: a.url,
+        article_id: a.id,
+        published_at: a.published_at,
+        deg: Math.floor(Math.random() * 5),
+        verdict: Math.random() > 0.8 ? 'FALSE' : (Math.random() > 0.5 ? 'MISLEADING' : 'UNVERIFIED'),
+        prob: Math.random() * 0.9 + 0.1,
+      }));
+      const edges = [];
+      for (let i = 0; i < nodes.length - 1; i++) {
+        if (Math.random() > 0.3) {
+          edges.push({ src: nodes[i].id, dst: nodes[i + 1].id, score: Math.random() * 0.5 + 0.5 });
+        }
+      }
+      return { nodes, edges, counts: { nodes: nodes.length, edges: edges.length } } as any;
+    }
+
+    if (path === '/graph/timeline') {
+      const limit = parseInt(searchParams.get('limit') || '60', 10);
+      const sample = data.articles.slice(0, limit);
+      const clusters = sample.map((a: any) => ({
+        id: a.id,
+        title: a.title,
+        domain: a.domain,
+        url: a.url,
+        published_at: a.published_at,
+        newest_member_at: a.published_at,
+        deg: 0,
+        members: []
+      }));
+      return { clusters, count: clusters.length, focused: !!searchParams.get('article_id') } as any;
+    }
+
     // Default empty response
     return {} as any;
   },
